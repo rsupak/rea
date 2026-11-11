@@ -1,3 +1,4 @@
+#include "psx_catalog.hpp"
 #include "psx_cd_loc.hpp"
 #include "psx_disc.hpp"
 
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <iterator>
 #include <vector>
 
@@ -30,7 +32,7 @@ constexpr InferredStream kInferredLz[] = {
 
 void usage() {
   std::cerr
-      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR] [--export-all]\n"
+      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR] [--export-all] [--classify]\n"
       << "\n"
       << "Read-only. Lists the ISO 9660 files in a MODE2/2352 image, prints\n"
       << "the verified resource at LBA 108754, and unpacks two loader-table\n"
@@ -121,6 +123,7 @@ int main(int argc, char** argv) {
   std::string cue_path;
   std::string export_dir;
   bool export_all = false;
+  bool classify = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     auto need = [&](const char* name) -> const char* {
@@ -150,6 +153,8 @@ int main(int argc, char** argv) {
       export_dir = value;
     } else if (arg == "--export-all") {
       export_all = true;
+    } else if (arg == "--classify") {
+      classify = true;
     } else if (arg == "--help") {
       usage();
       return 0;
@@ -272,37 +277,18 @@ int main(int argc, char** argv) {
       std::cout << "wrote " << path.string() << ' ' << tim->width << 'x' << tim->height << '\n';
     }
   }
-  const psx_cd_loc::IsoEntry* executable = nullptr;
-  for (const auto& entry : volume->entries) {
-    if (!entry.directory && entry.path.find("SLUS") != std::string::npos) {
-      executable = &entry;
-      break;
-    }
-  }
-  if (executable == nullptr) {
-    std::cout << "index error=no executable in the ISO directory\n";
+  const auto disc = psx_cd_loc::open_indexed_disc(image_path);
+  if (!disc.error.empty()) {
+    std::cout << "index error=" << disc.error << '\n';
     return 0;
   }
-  std::vector<std::uint8_t> exe;
-  if (!read_user_span(input, file_size, executable->lba, executable->length, exe, error)) {
-    std::cout << "index error=" << error << '\n';
-    return 0;
-  }
-  if (exe.size() < 2048 + 0x8008 || std::string(reinterpret_cast<const char*>(exe.data()), 8) != "PS-X EXE") {
-    std::cout << "index error=executable is not a PS-X EXE\n";
-    return 0;
-  }
-  const std::uint16_t base_halfword = static_cast<std::uint16_t>(exe[2048 + 0x8006] |
-                                                                (exe[2048 + 0x8007] << 8));
-  const auto records = std::span<const std::uint8_t>(exe).subspan(2048 + 4);
-  const auto indexed = psx_cd_loc::parse_indexed_files(records, base_halfword);
-  std::cout << "index_base " << base_halfword << '\n';
+  std::cout << "index_base " << disc.index_base << '\n';
   std::size_t file_count = 0;
-  for (const auto& item : indexed) {
-    if (item.group) {
-      std::cout << "group " << item.id << ' ' << item.lba << ' ' << -item.length << '\n';
+  for (const auto& blob : disc.entries) {
+    if (blob.file.group) {
+      std::cout << "group " << blob.file.id << ' ' << blob.file.lba << ' ' << -blob.file.length << '\n';
     } else {
-      std::cout << "index " << item.id << ' ' << item.lba << ' ' << item.length << '\n';
+      std::cout << "index " << blob.file.id << ' ' << blob.file.lba << ' ' << blob.file.length << '\n';
       ++file_count;
     }
   }
@@ -310,52 +296,63 @@ int main(int argc, char** argv) {
 
   bool found_tim = false;
   bool wrote_tim = false;
-  for (const auto& item : indexed) {
-    if (item.group || item.length <= 0) {
+  std::map<std::string, int> counts;
+  for (const auto& blob : disc.entries) {
+    if (blob.file.group || blob.file.length <= 0) {
       continue;
     }
-    const auto length = static_cast<std::uint32_t>(item.length);
-    const std::uint32_t rounded = psx_cd_loc::user_bytes_covering_sectors(length);
-    std::vector<std::uint8_t> body;
-    if (!read_user_span(input, file_size, item.lba, rounded, body, error)) {
+    if (blob.read_error) {
+      if (classify) {
+        std::cout << "classify " << blob.file.id << ' ' << blob.file.lba << ' ' << blob.file.length
+                  << " error\n";
+      }
       continue;
     }
-    const std::size_t exact = std::min(body.size(), static_cast<std::size_t>(length));
-    auto raw_tim = psx_cd_loc::decode_tim(std::span<const std::uint8_t>(body).first(exact));
-    std::optional<psx_cd_loc::TimRgb> lz_tim;
-    const char* source = "raw";
-    const psx_cd_loc::TimRgb* picture = nullptr;
-    if (raw_tim.has_value()) {
-      picture = &*raw_tim;
-    } else {
-      psx_cd_loc::LzError lz_error = psx_cd_loc::LzError::None;
-      auto decoded = psx_cd_loc::lz_decompress(body, lz_error);
-      if (decoded.has_value()) {
-        lz_tim = psx_cd_loc::decode_tim(decoded->bytes);
-        if (lz_tim.has_value()) {
-          picture = &*lz_tim;
-          source = "lz";
+    const auto& classified = blob.classification;
+    const char* name = psx_cd_loc::file_kind_name(classified.kind);
+    ++counts[name];
+    if (classify) {
+      std::cout << "classify " << blob.file.id << ' ' << blob.file.lba << ' ' << blob.file.length << ' '
+                << name;
+      if (!classified.detail.empty()) {
+        std::cout << ' ' << classified.detail;
+      }
+      std::cout << '\n';
+    }
+    int picture_index = 0;
+    for (const auto& picture : classified.pictures) {
+      found_tim = true;
+      std::cout << "index_tim " << blob.file.id << ' ' << blob.file.lba << ' ' << picture.label << ' '
+                << picture.image.width << 'x' << picture.image.height << '\n';
+      if (!export_dir.empty() && (export_all || !wrote_tim)) {
+        const auto ppm = psx_cd_loc::encode_ppm(picture.image);
+        std::string label = picture.label;
+        for (char& ch : label) {
+          if (ch == ':') {
+            ch = '-';
+          }
+        }
+        const auto filename = picture_index == 0 && picture.label == "raw"
+                                  ? "index-" + std::to_string(blob.file.id) + ".ppm"
+                                  : "index-" + std::to_string(blob.file.id) + "-" + label + ".ppm";
+        const auto path = std::filesystem::path(export_dir) / filename;
+        std::ofstream output(path, std::ios::binary);
+        if (output) {
+          output.write(reinterpret_cast<const char*>(ppm.data()),
+                       static_cast<std::streamsize>(ppm.size()));
+          std::cout << "wrote " << path.string() << '\n';
+          wrote_tim = true;
         }
       }
+      ++picture_index;
     }
-    if (picture == nullptr) {
-      continue;
+  }
+  if (classify) {
+    std::cout << "summary";
+    for (const auto& count : counts) {
+      std::cout << ' ' << count.first << '=' << count.second;
     }
-    found_tim = true;
-    std::cout << "index_tim " << item.id << ' ' << item.lba << ' ' << source << ' '
-              << picture->width << 'x' << picture->height << '\n';
-    if (!export_dir.empty() && (export_all || !wrote_tim)) {
-      const auto ppm = psx_cd_loc::encode_ppm(*picture);
-      const auto path =
-          std::filesystem::path(export_dir) / ("index-" + std::to_string(item.id) + ".ppm");
-      std::ofstream output(path, std::ios::binary);
-      if (output) {
-        output.write(reinterpret_cast<const char*>(ppm.data()),
-                     static_cast<std::streamsize>(ppm.size()));
-        std::cout << "wrote " << path.string() << '\n';
-        wrote_tim = true;
-      }
-    }
+    std::cout << '\n';
   }
   if (!found_tim) {
     std::cout << "index_tim none\n";

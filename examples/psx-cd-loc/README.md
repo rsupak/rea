@@ -127,16 +127,19 @@ two sector numbers were not a captured `Setloc`. The index length is the
 exact file size. Those unpacks also consume the next flag byte from the
 unused tail of the last sector, so the viewer reads whole 2048-byte user
 sectors. The decoder still rejects a short buffer. It then lists the
-executable's own file index. A PPM file is written only when bytes start
-with TIM id `0x10` and the block sizes fit. The captured heads of the two
-known streams do not.
+executable's own file index. A PPM is written when a buffer, or an
+in-range offset inside a relocated word table, starts with TIM id `0x10`
+and the block sizes fit. The captured heads of the two known streams do not.
 
 From this directory, one command on Apple clang:
 
 ```bash
 clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
   -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp \
-  src/psx_cd_view_main.cpp -o psx_cd_view
+  src/psx_catalog.cpp src/psx_cd_view_main.cpp -o psx_cd_view
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+  -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp \
+  src/psx_catalog.cpp tests/cd_view_test.cpp -o psx_cd_view_tests
 ```
 
 The shared headers use `std::span`, so this is C++20. Apple clang 21 accepts
@@ -154,7 +157,43 @@ executable's table (365 files, including id 2 at LBA 108754 length 61680).
 `index_tim` is printed when a buffer is a TIM. Pixel width is the header
 value times 4, 2, or 1 for 4-bit, 8-bit, and 16-bit. `--export-all` with
 `--export-dir` writes every such picture; without `--export-all` only the
-first is written.
+first is written. A picture found at an in-range offset of a relocated
+word table is written as `index-<id>-offset-<n>.ppm`.
+
+`--classify` prints one line per indexed file and a count summary:
+
+```text
+classify ID LBA LENGTH KIND [detail]
+summary tim=N lz=N offset_table=N ...
+```
+
+Kind names: `tim`, `lz`, `lz_tim`, `offset_table`, `text`, `psx_exe`,
+`vag`, `vab`, `seq`, `str`, `mips`, `data`. `tim` and `lz` follow the
+executable. `offset_table` is the word-count relocation used on the
+unpacked block whose first word is 4: each following word is an offset
+added to the block base, and a negative offset is still relocated. The
+viewer accepts that shape only when at least half of those offsets land
+inside the buffer, so the unpacked block whose first word is 8 and whose
+next word is past the end stays `lz`. That majority test is not in the
+executable. `vag` (`VAGp`), `vab` (`pBAV`), `seq` (`pQES`), and `str`
+(first word `0x80010160`) are standard signatures, not a traced load.
+`mips` is only an `addiu sp,sp,<0` plus `sw ra,off(sp)` pair. `text` is a
+printable prefix. No XA type is assigned; that audio has no file magic here.
+
+## XenoNative
+
+`build_xeno_native.sh` compiles an AppKit front end with
+`clang++ -framework Cocoa` and wraps it as `XenoNative.app`. Ad-hoc
+`codesign -s -` is applied. The window lists indexed files and draws a TIM
+with nearest-neighbor scaling, or a hex dump otherwise. Arrow keys move the
+table selection. Pass `--cue PATH`, or leave it off to get an open panel.
+The core classifiers stay in the portable C++ sources. This script is for
+macOS; it does not link on Linux.
+
+```bash
+sh build_xeno_native.sh
+XenoNative.app/Contents/MacOS/XenoNative --cue "/path/to/SLUS-00664.CUE"
+```
 
 
 ## Build

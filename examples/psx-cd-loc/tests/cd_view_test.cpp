@@ -1,3 +1,4 @@
+#include "psx_catalog.hpp"
 #include "psx_cd_loc.hpp"
 #include "psx_disc.hpp"
 
@@ -246,6 +247,83 @@ void test_tim_8bpp_width_is_twice_the_halfword_field() {
   CHECK(picture->rgb[9] == 0xF8);
 }
 
+std::vector<std::uint8_t> literal_lz(std::uint32_t output_size, const std::vector<std::uint8_t>& literals) {
+  std::vector<std::uint8_t> source(4);
+  put_u32(source, 0, output_size);
+  for (std::size_t i = 0; i < literals.size(); i += 8) {
+    source.push_back(0x00);
+    for (std::size_t bit = 0; bit < 8 && i + bit < literals.size(); ++bit) {
+      source.push_back(literals[i + bit]);
+    }
+  }
+  source.push_back(0x00);
+  return source;
+}
+
+std::vector<std::uint8_t> tiny_16bpp_tim() {
+  std::vector<std::uint8_t> tim(24, 0);
+  put_u32(tim, 0, 0x10);
+  put_u32(tim, 4, 2);
+  put_u32(tim, 8, 16);
+  put_u16(tim, 16, 2);
+  put_u16(tim, 18, 1);
+  put_u16(tim, 20, 0x001F);
+  put_u16(tim, 22, 0x03E0);
+  return tim;
+}
+
+void test_classification_of_lz_offset_table_and_signatures() {
+  const std::vector<std::uint8_t> table_bytes = {2, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0};
+  const auto wrapped = literal_lz(16, table_bytes);
+  const auto table = psx_cd_loc::classify_file_bytes(wrapped, static_cast<std::uint32_t>(wrapped.size()));
+  CHECK(table.kind == psx_cd_loc::FileKind::OffsetTable);
+  CHECK(table.detail.find("count=2") != std::string::npos);
+
+  const std::vector<std::uint8_t> not_table = {8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x00};
+  const auto plain = literal_lz(8, not_table);
+  const auto lz = psx_cd_loc::classify_file_bytes(plain, static_cast<std::uint32_t>(plain.size()));
+  CHECK(lz.kind == psx_cd_loc::FileKind::Lz);
+
+  std::vector<std::uint8_t> nested(8);
+  put_u32(nested, 0, 1);
+  put_u32(nested, 4, 8);
+  const auto picture = tiny_16bpp_tim();
+  nested.insert(nested.end(), picture.begin(), picture.end());
+  const auto nested_lz = literal_lz(static_cast<std::uint32_t>(nested.size()), nested);
+  const auto found = psx_cd_loc::classify_file_bytes(nested_lz, static_cast<std::uint32_t>(nested_lz.size()));
+  CHECK(found.kind == psx_cd_loc::FileKind::OffsetTable);
+  CHECK(found.pictures.size() == 1);
+  CHECK(found.pictures[0].label == "offset:0");
+  CHECK(found.pictures[0].image.width == 2);
+
+  const auto raw_tim = psx_cd_loc::classify_file_bytes(picture, static_cast<std::uint32_t>(picture.size()));
+  CHECK(raw_tim.kind == psx_cd_loc::FileKind::Tim);
+  CHECK(raw_tim.pictures.size() == 1);
+
+  const std::vector<std::uint8_t> vag = {'V', 'A', 'G', 'p', 0, 0, 0, 0};
+  CHECK(psx_cd_loc::classify_file_bytes(vag, 8).kind == psx_cd_loc::FileKind::Vag);
+  const std::vector<std::uint8_t> vab = {'p', 'B', 'A', 'V', 0, 0, 0, 0};
+  CHECK(psx_cd_loc::classify_file_bytes(vab, 8).kind == psx_cd_loc::FileKind::Vab);
+  const std::vector<std::uint8_t> seq = {'p', 'Q', 'E', 'S', 0, 0, 0, 0};
+  CHECK(psx_cd_loc::classify_file_bytes(seq, 8).kind == psx_cd_loc::FileKind::Seq);
+  std::vector<std::uint8_t> str(4);
+  put_u32(str, 0, 0x80010160u);
+  CHECK(psx_cd_loc::classify_file_bytes(str, 4).kind == psx_cd_loc::FileKind::Str);
+  const std::vector<std::uint8_t> exe = {'P', 'S', '-', 'X', ' ', 'E', 'X', 'E'};
+  CHECK(psx_cd_loc::classify_file_bytes(exe, 8).kind == psx_cd_loc::FileKind::PsxExe);
+  std::vector<std::uint8_t> text(32, 'A');
+  CHECK(psx_cd_loc::classify_file_bytes(text, 32).kind == psx_cd_loc::FileKind::Text);
+
+  const std::uint32_t addiu_sp = (9u << 26) | (29u << 21) | (29u << 16) | 0xFFF0u;
+  const std::uint32_t sw_ra = (43u << 26) | (29u << 21) | (31u << 16) | 12u;
+  std::vector<std::uint8_t> mips(8);
+  put_u32(mips, 0, addiu_sp);
+  put_u32(mips, 4, sw_ra);
+  CHECK(psx_cd_loc::classify_file_bytes(mips, 8).kind == psx_cd_loc::FileKind::Mips);
+  CHECK(!psx_cd_loc::open_indexed_disc("/no/such/image.bin").error.empty());
+  CHECK(!psx_cd_loc::preview_indexed_file("/no/such/image.bin", 0, 16).error.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -256,6 +334,7 @@ int main() {
   test_tim_16bit_becomes_ppm();
   test_tim_4bpp_low_nibble_and_first_clut_row();
   test_tim_8bpp_width_is_twice_the_halfword_field();
+  test_classification_of_lz_offset_table_and_signatures();
   if (failures != 0) {
     std::fprintf(stderr, "%d of %d checks failed\n", failures, checks);
     return 1;
