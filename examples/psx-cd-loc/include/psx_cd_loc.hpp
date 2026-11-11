@@ -111,6 +111,23 @@ std::optional<std::uint32_t> aligned_byte_length(std::int32_t byte_length);
 // byte count; the last sector contributes only the leading leftover bytes.
 inline constexpr std::uint64_t kRawSectorBytes = 2352;
 inline constexpr std::uint32_t kUserBytesPerSector = 2048;
+
+// The index length is the exact file size. A disc read that must feed the
+// bitstream also needs the unused bytes at the end of the last sector,
+// because a finished unpack consumes one more flag byte. This rounds the
+// read up to whole user sectors. The decoder itself stays exact.
+inline constexpr std::uint32_t user_bytes_covering_sectors(std::uint32_t length) {
+  if (length == 0) {
+    return 0;
+  }
+  const std::uint64_t sectors =
+      (static_cast<std::uint64_t>(length) + kUserBytesPerSector - 1) / kUserBytesPerSector;
+  const std::uint64_t bytes = sectors * kUserBytesPerSector;
+  if (bytes > 0xFFFFFFFFull) {
+    return 0xFFFFFFFFu;
+  }
+  return static_cast<std::uint32_t>(bytes);
+}
 inline constexpr std::uint32_t kSectorHeaderBytes = 12;
 inline constexpr std::uint32_t kUserDataOffset = 24;
 inline constexpr std::uint8_t kMode2 = 2;

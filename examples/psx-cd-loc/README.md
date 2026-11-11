@@ -123,9 +123,13 @@ Pass a MODE2/2352 BIN, or a CUE whose first data track is MODE2/2352.
 It lists the ISO 9660 volume, prints the resource at logical sector
 108754 (61680 user bytes) using the field offsets the consumer loads,
 and unpacks two streams whose sectors come from the loader table. Those
-two sector numbers were not a captured `Setloc`. A PPM file is written
-only when unpacked bytes start with TIM id `0x10` and the block sizes fit.
-The captured heads of those streams do not.
+two sector numbers were not a captured `Setloc`. The index length is the
+exact file size. Those unpacks also consume the next flag byte from the
+unused tail of the last sector, so the viewer reads whole 2048-byte user
+sectors. The decoder still rejects a short buffer. It then lists the
+executable's own file index. A PPM file is written only when bytes start
+with TIM id `0x10` and the block sizes fit. The captured heads of the two
+known streams do not.
 
 From this directory, one command on Apple clang:
 
@@ -142,6 +146,13 @@ that standard.
 psx_cd_view --cue "/path/to/SLUS-00664.CUE"
 psx_cd_view --image "/path/to/SLUS-00664.BIN"
 ```
+
+On the disc already measured, expect `volume XENOGEARS`, the two ISO files,
+`prefix_bytes 672`, and `lz` lines `bytes=29779` and `bytes=260862` with
+`tim=no`. `index_base 24` is followed by one `index` line per file in the
+executable's table (365 files, including id 2 at LBA 108754 length 61680).
+`index_tim` is printed only for a buffer whose id word is `0x10`.
+
 
 ## Build
 

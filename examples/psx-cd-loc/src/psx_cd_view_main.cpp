@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <span>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -236,7 +237,8 @@ int main(int argc, char** argv) {
 
   for (const auto& stream : kInferredLz) {
     std::vector<std::uint8_t> compressed;
-    if (!read_user_span(input, file_size, stream.lba, stream.length, compressed, error)) {
+    const std::uint32_t rounded = psx_cd_loc::user_bytes_covering_sectors(stream.length);
+    if (!read_user_span(input, file_size, stream.lba, rounded, compressed, error)) {
       std::cout << "lz name=" << stream.name << " lba=" << stream.lba << " error=" << error << '\n';
       continue;
     }
@@ -250,7 +252,8 @@ int main(int argc, char** argv) {
     }
     const auto tim = psx_cd_loc::decode_tim(decoded->bytes);
     std::cout << "lz name=" << stream.name << " lba=" << stream.lba << " length=" << stream.length
-              << " bytes=" << decoded->bytes.size() << " expected=" << stream.expected_output
+              << " read=" << rounded << " bytes=" << decoded->bytes.size()
+              << " expected=" << stream.expected_output
               << " sha256=" << psx_cd_loc::sha256_hex(decoded->bytes)
               << " tim=" << (tim.has_value() ? "yes" : "no") << '\n';
     print_hex_ascii(decoded->bytes, 48);
@@ -265,6 +268,94 @@ int main(int argc, char** argv) {
       output.write(reinterpret_cast<const char*>(ppm.data()), static_cast<std::streamsize>(ppm.size()));
       std::cout << "wrote " << path.string() << ' ' << tim->width << 'x' << tim->height << '\n';
     }
+  }
+  const psx_cd_loc::IsoEntry* executable = nullptr;
+  for (const auto& entry : volume->entries) {
+    if (!entry.directory && entry.path.find("SLUS") != std::string::npos) {
+      executable = &entry;
+      break;
+    }
+  }
+  if (executable == nullptr) {
+    std::cout << "index error=no executable in the ISO directory\n";
+    return 0;
+  }
+  std::vector<std::uint8_t> exe;
+  if (!read_user_span(input, file_size, executable->lba, executable->length, exe, error)) {
+    std::cout << "index error=" << error << '\n';
+    return 0;
+  }
+  if (exe.size() < 2048 + 0x8008 || std::string(reinterpret_cast<const char*>(exe.data()), 8) != "PS-X EXE") {
+    std::cout << "index error=executable is not a PS-X EXE\n";
+    return 0;
+  }
+  const std::uint16_t base_halfword = static_cast<std::uint16_t>(exe[2048 + 0x8006] |
+                                                                (exe[2048 + 0x8007] << 8));
+  const auto records = std::span<const std::uint8_t>(exe).subspan(2048 + 4);
+  const auto indexed = psx_cd_loc::parse_indexed_files(records, base_halfword);
+  std::cout << "index_base " << base_halfword << '\n';
+  std::size_t file_count = 0;
+  for (const auto& item : indexed) {
+    if (item.group) {
+      std::cout << "group " << item.id << ' ' << item.lba << ' ' << -item.length << '\n';
+    } else {
+      std::cout << "index " << item.id << ' ' << item.lba << ' ' << item.length << '\n';
+      ++file_count;
+    }
+  }
+  std::cout << "index_files " << file_count << '\n';
+
+  bool found_tim = false;
+  bool wrote_tim = false;
+  for (const auto& item : indexed) {
+    if (item.group || item.length <= 0) {
+      continue;
+    }
+    const auto length = static_cast<std::uint32_t>(item.length);
+    const std::uint32_t rounded = psx_cd_loc::user_bytes_covering_sectors(length);
+    std::vector<std::uint8_t> body;
+    if (!read_user_span(input, file_size, item.lba, rounded, body, error)) {
+      continue;
+    }
+    const std::size_t exact = std::min(body.size(), static_cast<std::size_t>(length));
+    auto raw_tim = psx_cd_loc::decode_tim(std::span<const std::uint8_t>(body).first(exact));
+    std::optional<psx_cd_loc::TimRgb> lz_tim;
+    const char* source = "raw";
+    const psx_cd_loc::TimRgb* picture = nullptr;
+    if (raw_tim.has_value()) {
+      picture = &*raw_tim;
+    } else {
+      psx_cd_loc::LzError lz_error = psx_cd_loc::LzError::None;
+      auto decoded = psx_cd_loc::lz_decompress(body, lz_error);
+      if (decoded.has_value()) {
+        lz_tim = psx_cd_loc::decode_tim(decoded->bytes);
+        if (lz_tim.has_value()) {
+          picture = &*lz_tim;
+          source = "lz";
+        }
+      }
+    }
+    if (picture == nullptr) {
+      continue;
+    }
+    found_tim = true;
+    std::cout << "index_tim " << item.id << ' ' << item.lba << ' ' << source << ' '
+              << picture->width << 'x' << picture->height << '\n';
+    if (!wrote_tim && !export_dir.empty()) {
+      const auto ppm = psx_cd_loc::encode_ppm(*picture);
+      const auto path =
+          std::filesystem::path(export_dir) / ("index-" + std::to_string(item.id) + ".ppm");
+      std::ofstream output(path, std::ios::binary);
+      if (output) {
+        output.write(reinterpret_cast<const char*>(ppm.data()),
+                     static_cast<std::streamsize>(ppm.size()));
+        std::cout << "wrote " << path.string() << '\n';
+        wrote_tim = true;
+      }
+    }
+  }
+  if (!found_tim) {
+    std::cout << "index_tim none\n";
   }
   return 0;
 }

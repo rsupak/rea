@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -102,6 +103,64 @@ void test_iso_lists_one_file() {
   CHECK(listed->entries[0].directory == false);
 }
 
+void test_index_ids_follow_halfword_base() {
+  std::vector<std::uint8_t> records(30 * 7, 0);
+  auto put = [&](int index, std::uint32_t lba, std::uint32_t length) {
+    const std::size_t at = static_cast<std::size_t>(index) * 7;
+    records[at] = static_cast<std::uint8_t>(lba);
+    records[at + 1] = static_cast<std::uint8_t>(lba >> 8);
+    records[at + 2] = static_cast<std::uint8_t>(lba >> 16);
+    put_u32(records, at + 3, length);
+  };
+  put(22, 108606, 100);
+  put(23, 108754, 0xFFFFFFFA);
+  put(24, 108754, 50);
+  put(26, 109000, 8);
+  put(27, 1, 1);
+  const auto files = psx_cd_loc::parse_indexed_files(records, 24);
+  CHECK(files.size() == 4);
+  CHECK(files[0].id == 0 && files[0].lba == 108606 && files[0].length == 100 && !files[0].group);
+  CHECK(files[1].group && files[1].id == 1 && files[1].length == -6);
+  CHECK(files[2].id == 2 && files[2].length == 50);
+  CHECK(files[3].id == 4 && files[3].lba == 109000);
+}
+
+void test_sector_round_up_supplies_the_trailing_flag() {
+  CHECK(psx_cd_loc::user_bytes_covering_sectors(14360) == 16384);
+  CHECK(psx_cd_loc::user_bytes_covering_sectors(2048) == 2048);
+  CHECK(psx_cd_loc::user_bytes_covering_sectors(0) == 0);
+  std::vector<std::uint8_t> sector(psx_cd_loc::kRawSectorBytes, 0);
+  static constexpr std::uint8_t kSync[12] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+  std::memcpy(sector.data(), kSync, 12);
+  const auto msf = psx_cd_loc::logical_sector_to_bcd_msf(0);
+  CHECK(msf.has_value());
+  sector[12] = msf->minute;
+  sector[13] = msf->second;
+  sector[14] = msf->sector;
+  sector[15] = psx_cd_loc::kMode2;
+  sector[16] = sector[20] = 1;
+  sector[17] = sector[21] = 2;
+  sector[18] = sector[22] = 8;
+  const std::uint8_t stream[] = {8, 0, 0, 0, 0x00, 1, 2, 3, 4, 5, 6, 7, 8, 0x00};
+  std::memcpy(sector.data() + 24, stream, 13);
+  psx_cd_loc::ImageError image_error = psx_cd_loc::ImageError::None;
+  const auto exact = psx_cd_loc::read_mode2_user(sector, 0, 13, 0, image_error);
+  CHECK(exact.has_value());
+  psx_cd_loc::LzError lz_error = psx_cd_loc::LzError::None;
+  CHECK(!psx_cd_loc::lz_decompress(exact->user, lz_error));
+  CHECK(lz_error == psx_cd_loc::LzError::Truncated);
+  const auto rounded = psx_cd_loc::read_mode2_user(
+      sector, 0, psx_cd_loc::user_bytes_covering_sectors(13), 0, image_error);
+  CHECK(rounded.has_value());
+  CHECK(rounded->user.size() == 2048);
+  const auto decoded = psx_cd_loc::lz_decompress(rounded->user, lz_error);
+  CHECK(lz_error == psx_cd_loc::LzError::None);
+  CHECK(decoded.has_value());
+  CHECK(decoded->bytes.size() == 8);
+  CHECK(decoded->source_used == 14);
+}
+
 void test_cue_selects_mode2_file() {
   std::string error;
   const auto name = psx_cd_loc::cue_mode2_file(
@@ -139,6 +198,8 @@ void test_tim_16bit_becomes_ppm() {
 
 int main() {
   test_iso_lists_one_file();
+  test_index_ids_follow_halfword_base();
+  test_sector_round_up_supplies_the_trailing_flag();
   test_cue_selects_mode2_file();
   test_tim_16bit_becomes_ppm();
   if (failures != 0) {

@@ -48,6 +48,20 @@ std::optional<IsoVolume> read_iso9660(const ReadUserSector& read_user, IsoError&
 // not a resolved path.
 std::optional<std::string> cue_mode2_file(std::string_view cue_text, std::string& error);
 
+// Records are 7 bytes: 24-bit little-endian logical sector, then 32-bit
+// little-endian length. Halfword base 24 selects record (id + base - 2).
+// A negative length whose magnitude is small is a group count, not a file.
+// The length is the exact file size, not a sector-rounded read size.
+struct IndexedFile {
+  std::uint32_t id = 0;
+  std::uint32_t lba = 0;
+  std::int32_t length = 0;
+  bool group = false;
+};
+
+std::vector<IndexedFile> parse_indexed_files(std::span<const std::uint8_t> records,
+                                            std::uint16_t base_halfword);
+
 struct TimRgb {
   int width = 0;
   int height = 0;

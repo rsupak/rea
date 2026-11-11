@@ -151,6 +151,40 @@ std::optional<IsoVolume> read_iso9660(const ReadUserSector& read_user, IsoError&
   return volume;
 }
 
+std::vector<IndexedFile> parse_indexed_files(std::span<const std::uint8_t> records,
+                                            std::uint16_t base_halfword) {
+  std::vector<IndexedFile> files;
+  if (base_halfword < 2) {
+    return files;
+  }
+  const std::uint32_t first = static_cast<std::uint32_t>(base_halfword) - 2u;
+  std::size_t index = static_cast<std::size_t>(first) * 7u;
+  while (index + 7 <= records.size() && files.size() < 4096) {
+    const auto record = records.subspan(index, 7);
+    const std::uint32_t lba = static_cast<std::uint32_t>(record[0]) |
+                              (static_cast<std::uint32_t>(record[1]) << 8) |
+                              (static_cast<std::uint32_t>(record[2]) << 16);
+    const std::uint32_t raw_length = read_u32(record, 3);
+    const auto length = static_cast<std::int32_t>(raw_length);
+    const std::uint32_t id =
+        static_cast<std::uint32_t>((index / 7u) - static_cast<std::size_t>(first));
+    if (lba == 0 && raw_length == 0) {
+      index += 7;
+      continue;
+    }
+    const bool plausible_lba = lba >= 100000 && lba < 400000;
+    if (plausible_lba && length > 0 && raw_length < 64u * 1024u * 1024u) {
+      files.push_back(IndexedFile{id, lba, length, false});
+    } else if (plausible_lba && length < 0 && length >= -1024) {
+      files.push_back(IndexedFile{id, lba, length, true});
+    } else {
+      break;
+    }
+    index += 7;
+  }
+  return files;
+}
+
 std::optional<std::string> cue_mode2_file(std::string_view cue_text, std::string& error) {
   std::string current_file;
   std::size_t offset = 0;
