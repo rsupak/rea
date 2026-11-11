@@ -1,3 +1,4 @@
+#import <AudioToolbox/AudioToolbox.h>
 #import <Cocoa/Cocoa.h>
 
 #include "psx_catalog.hpp"
@@ -43,12 +44,15 @@ struct Row {
 @implementation XenoDocument {
   std::vector<Row> _rows;
   std::string _bin;
+  std::vector<std::int16_t> _pcm;
+  AudioQueueRef _queue;
 }
 
 - (instancetype)initWithCue:(NSString*)cue {
   self = [super init];
   if (self != nil) {
     _imagePath = cue;
+    _queue = nullptr;
   }
   return self;
 }
@@ -109,13 +113,19 @@ struct Row {
   NSSplitView* detail = [[NSSplitView alloc] initWithFrame:NSMakeRect(0, 0, 680, 720)];
   detail.vertical = NO;
   self.picture = [[NearestImageView alloc] initWithFrame:NSMakeRect(0, 0, 680, 420)];
-  NSScrollView* textScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 680, 280)];
+  NSButton* play = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 680, 32)];
+  play.title = @"Play";
+  play.target = self;
+  play.action = @selector(playSample:);
+  play.bezelStyle = NSBezelStyleRounded;
+  NSScrollView* textScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 680, 248)];
   self.structure = [[NSTextView alloc] initWithFrame:textScroll.bounds];
   self.structure.editable = NO;
   self.structure.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
   textScroll.documentView = self.structure;
   textScroll.hasVerticalScroller = YES;
   [detail addSubview:self.picture];
+  [detail addSubview:play];
   [detail addSubview:textScroll];
   [split addSubview:tableScroll];
   [split addSubview:detail];
@@ -260,6 +270,46 @@ struct Row {
   text += "\n\n";
   text += preview.dump;
   self.structure.string = [NSString stringWithUTF8String:text.c_str()];
+  _pcm = preview.playable;
+}
+
+static void finishQueue(void* custom, AudioQueueRef queue, AudioQueueBufferRef buffer) {
+  (void)custom;
+  (void)buffer;
+  AudioQueueStop(queue, false);
+}
+
+- (void)playSample:(id)sender {
+  (void)sender;
+  if (_queue != nullptr) {
+    AudioQueueStop(_queue, true);
+    AudioQueueDispose(_queue, true);
+    _queue = nullptr;
+  }
+  if (_pcm.empty()) {
+    return;
+  }
+  AudioStreamBasicDescription format = {};
+  format.mSampleRate = psx_cd_loc::kSpuNominalRate;
+  format.mFormatID = kAudioFormatLinearPCM;
+  format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+  format.mBitsPerChannel = 16;
+  format.mChannelsPerFrame = 1;
+  format.mFramesPerPacket = 1;
+  format.mBytesPerFrame = 2;
+  format.mBytesPerPacket = 2;
+  if (AudioQueueNewOutput(&format, finishQueue, nullptr, nullptr, nullptr, 0, &_queue) != noErr) {
+    return;
+  }
+  AudioQueueBufferRef buffer = nullptr;
+  const UInt32 bytes = static_cast<UInt32>(_pcm.size() * sizeof(std::int16_t));
+  if (AudioQueueAllocateBuffer(_queue, bytes, &buffer) != noErr || buffer == nullptr) {
+    return;
+  }
+  buffer->mAudioDataByteSize = bytes;
+  std::memcpy(buffer->mAudioData, _pcm.data(), bytes);
+  AudioQueueEnqueueBuffer(_queue, buffer, 0, nullptr);
+  AudioQueueStart(_queue, nullptr);
 }
 
 @end

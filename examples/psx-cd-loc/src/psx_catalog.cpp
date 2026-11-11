@@ -1,3 +1,4 @@
+#include "psx_audio.hpp"
 #include "psx_catalog.hpp"
 
 #include <algorithm>
@@ -202,6 +203,12 @@ const char* file_kind_name(FileKind kind) {
       return "mips";
     case FileKind::Data:
       return "data";
+    case FileKind::Wds:
+      return "wds";
+    case FileKind::Smds:
+      return "smds";
+    case FileKind::Seds:
+      return "seds";
   }
   return "data";
 }
@@ -238,6 +245,23 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
     result.detail = "frame signature";
     return result;
   }
+  if (auto bank = parse_wds(file)) {
+    result.kind = FileKind::Wds;
+    result.detail = wds_detail(*bank);
+    return result;
+  }
+  if (starts_with(file, "smds", 4)) {
+    result.kind = FileKind::Smds;
+    if (file.size() >= 8) {
+      result.detail = "w0=" + hex8(read_u32(file, 0)) + " w1=" + hex8(read_u32(file, 4));
+    }
+    return result;
+  }
+  if (auto seds = parse_seds(file)) {
+    result.kind = FileKind::Seds;
+    result.detail = seds_detail(*seds);
+    return result;
+  }
   LzError lz_error = LzError::None;
   auto decoded = lz_decompress(rounded, lz_error);
   if (decoded.has_value() && !decoded->bytes.empty() && decoded->source_used <= rounded.size()) {
@@ -266,6 +290,12 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
     }
     result.kind = FileKind::Lz;
     result.detail = "out=" + std::to_string(decoded->bytes.size());
+    if (decoded->bytes.size() >= 4) {
+      result.detail += " w0=" + hex8(read_u32(decoded->bytes, 0));
+    }
+    if (decoded->bytes.size() >= 8) {
+      result.detail += " w1=" + hex8(read_u32(decoded->bytes, 4));
+    }
     return result;
   }
   std::uint32_t count = 0;
@@ -475,8 +505,19 @@ FilePreview preview_indexed_file(const std::string& image_path, std::uint32_t lb
   if (!read_user_span(input, static_cast<std::uint64_t>(file_end), lba, rounded, body, preview.error)) {
     return preview;
   }
+  const auto exact = std::min(body.size(), static_cast<std::size_t>(length));
+  const auto file = std::span<const std::uint8_t>(body).first(exact);
   preview.classification = classify_file_bytes(body, length);
-  preview.dump = hex_dump(std::span<const std::uint8_t>(body).first(std::min(body.size(), static_cast<std::size_t>(length))));
+  preview.dump = hex_dump(file);
+  if (auto bank = parse_wds(file)) {
+    if (!bank->samples.empty()) {
+      const auto& sample = bank->samples.front();
+      const auto blob = file.subspan(bank->sample_offset, bank->sample_bytes);
+      if (sample.byte_offset <= blob.size() && sample.byte_size <= blob.size() - sample.byte_offset) {
+        preview.playable = decode_psx_adpcm(blob.subspan(sample.byte_offset, sample.byte_size));
+      }
+    }
+  }
   return preview;
 }
 

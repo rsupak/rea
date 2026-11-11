@@ -1,3 +1,4 @@
+#include "psx_audio.hpp"
 #include "psx_catalog.hpp"
 #include "psx_cd_loc.hpp"
 #include "psx_disc.hpp"
@@ -354,6 +355,66 @@ void test_classification_of_lz_offset_table_and_signatures() {
   const auto data = psx_cd_loc::classify_file_bytes(opaque, 32);
   CHECK(data.kind == psx_cd_loc::FileKind::Data);
   CHECK(data.detail.find("w0=11111111") != std::string::npos);
+  CHECK(lz.detail.find("w0=00000008") != std::string::npos);
+
+  std::vector<std::uint8_t> block(16, 0);
+  block[0] = 0x10;
+  block[2] = 0x01;
+  const auto pcm = psx_cd_loc::decode_psx_adpcm(block);
+  CHECK(pcm.size() == 28);
+  CHECK(pcm[0] == 4096);
+  CHECK(pcm[1] == 3840);
+  CHECK(pcm[2] == 3600);
+  std::vector<std::uint8_t> ended = block;
+  ended[1] = 0x01;
+  ended.insert(ended.end(), block.begin(), block.end());
+  CHECK(psx_cd_loc::decode_psx_adpcm(ended).size() == 28);
+
+  std::vector<std::uint8_t> wds(96, 0);
+  wds[0] = 'w';
+  wds[1] = 'd';
+  wds[2] = 's';
+  wds[3] = ' ';
+  put_u32(wds, 16, 80);
+  put_u32(wds, 20, 16);
+  put_u32(wds, 24, 80);
+  put_u32(wds, 28, 1);
+  put_u32(wds, 40, 0x1010);
+  std::copy(block.begin(), block.end(), wds.begin() + 80);
+  const auto bank = psx_cd_loc::parse_wds(wds);
+  CHECK(bank.has_value());
+  CHECK(bank->records);
+  CHECK(bank->samples.size() == 1);
+  CHECK(bank->samples[0].byte_size == 16);
+  CHECK(bank->half_at_30 == 0);
+  CHECK(bank->word_at_40 == 0x1010);
+  const auto decoded = psx_cd_loc::decode_psx_adpcm(
+      std::span<const std::uint8_t>(wds).subspan(80, 16));
+  CHECK(decoded[0] == 4096);
+  const auto wav = psx_cd_loc::encode_wav(decoded, psx_cd_loc::kSpuNominalRate);
+  CHECK(wav.size() > 44);
+  CHECK(wav[0] == 'R' && wav[1] == 'I' && wav[2] == 'F' && wav[3] == 'F');
+  CHECK(wav[24] == 0x44 && wav[25] == 0xAC);
+  CHECK(psx_cd_loc::classify_file_bytes(wds, static_cast<std::uint32_t>(wds.size())).kind ==
+        psx_cd_loc::FileKind::Wds);
+
+  std::vector<std::uint8_t> seds(24, 0);
+  seds[0] = 's';
+  seds[1] = 'e';
+  seds[2] = 'd';
+  seds[3] = 's';
+  put_u32(seds, 8, 24);
+  put_u16(seds, 12, 0x0101);
+  put_u16(seds, 20, 9);
+  const auto effect = psx_cd_loc::parse_seds(seds);
+  CHECK(effect.has_value());
+  CHECK(effect->covered_bytes == 24);
+  CHECK(effect->version == 0x0101);
+  CHECK(effect->id == 9);
+  CHECK(psx_cd_loc::classify_file_bytes(seds, 24).kind == psx_cd_loc::FileKind::Seds);
+
+  std::vector<std::uint8_t> smds = {'s', 'm', 'd', 's', 1, 0, 0, 0};
+  CHECK(psx_cd_loc::classify_file_bytes(smds, 8).kind == psx_cd_loc::FileKind::Smds);
   CHECK(!psx_cd_loc::open_indexed_disc("/no/such/image.bin").error.empty());
   CHECK(!psx_cd_loc::preview_indexed_file("/no/such/image.bin", 0, 16).error.empty());
 }

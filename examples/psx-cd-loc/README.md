@@ -136,10 +136,10 @@ From this directory, one command on Apple clang:
 ```bash
 clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
   -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp \
-  src/psx_catalog.cpp src/psx_cd_view_main.cpp -o psx_cd_view
+  src/psx_catalog.cpp src/psx_audio.cpp src/psx_cd_view_main.cpp -o psx_cd_view
 clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
   -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp \
-  src/psx_catalog.cpp tests/cd_view_test.cpp -o psx_cd_view_tests
+  src/psx_catalog.cpp src/psx_audio.cpp tests/cd_view_test.cpp -o psx_cd_view_tests
 ```
 
 The shared headers use `std::span`, so this is C++20. Apple clang 21 accepts
@@ -184,7 +184,15 @@ check is the comparison in the chunk walker. `vag` (`VAGp`), `vab` (`pBAV`), `se
 `mips` is only an `addiu sp,sp,<0` plus `sw ra,off(sp)` pair. `text` is a
 printable prefix. No XA type is assigned; that audio has no file magic here.
 A `data` line carries the first two words, and `--classify` then prints
-`data_head COUNT w0=... w1=...` for each distinct pair. The startup path
+`data_head COUNT w0=... w1=...` for each distinct pair. An unpacked file
+that stays `lz` also prints `w0` and `w1`, grouped as `lz_head`.
+`wds`, `smds`, and `seds` are the four-byte tags on the remaining files.
+`wds` uses the sizes the loader passes to the SPU transfer: the word at
+offset 16 is the header, the word at 20 is the sample-byte count, and the
+word at 24 is the sample offset. `--export-audio` writes each piece as
+`index-<id>-sample-<k>.wav` at 44100 Hz, the SPU rate for pitch `0x1000`.
+`seds` reports the size, version halfword, and id the list code loads.
+`smds` is only the tag; this executable does not compare it. The startup path
 relocates one unpacked table and later reads a halfword at
 `entry + 4 + index*2`. The four-pointer block is decompressed to a fixed
 address, and the following call leaves this executable, so the name bytes

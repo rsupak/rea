@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(psx_cd_loc src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp src/psx_catalog.cpp)
+add_library(psx_cd_loc src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp src/psx_catalog.cpp src/psx_audio.cpp)
 target_include_directories(psx_cd_loc PUBLIC include)
 
 add_executable(psx_cd_loc_tests tests/cd_loc_test.cpp)

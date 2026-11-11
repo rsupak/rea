@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 clang++ -std=c++20 -Wall -Wextra -Wpedantic -ObjC++ -fobjc-arc \
   -I include \
   src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp src/psx_catalog.cpp \
-  src/XenoNative.mm \
-  -framework Cocoa \
+  src/psx_audio.cpp src/XenoNative.mm \
+  -framework Cocoa -framework AudioToolbox \
   -o XenoNative
 rm -rf XenoNative.app
 mkdir -p XenoNative.app/Contents/MacOS

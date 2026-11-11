@@ -25,6 +25,9 @@ enum class FileKind {
   Str,
   Mips,
   Data,
+  Wds,
+  Smds,
+  Seds,
 };
 
 struct FoundTim {
@@ -67,6 +70,8 @@ struct FilePreview {
   Classification classification;
   std::string dump;
   std::string error;
+  // First wds sample, when the file is one. Empty otherwise.
+  std::vector<std::int16_t> playable;
 };
 
 // Re-reads one indexed file and formats the first 256 bytes.

@@ -1,3 +1,4 @@
+#include "psx_audio.hpp"
 #include "psx_catalog.hpp"
 #include "psx_cd_loc.hpp"
 #include "psx_disc.hpp"
@@ -32,7 +33,8 @@ constexpr InferredStream kInferredLz[] = {
 
 void usage() {
   std::cerr
-      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR] [--export-all] [--classify]\n"
+      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR] [--export-all]\n"
+      << "             [--export-audio] [--classify]\n"
       << "\n"
       << "Read-only. Lists the ISO 9660 files in a MODE2/2352 image, prints\n"
       << "the verified resource at LBA 108754, and unpacks two loader-table\n"
@@ -123,6 +125,7 @@ int main(int argc, char** argv) {
   std::string cue_path;
   std::string export_dir;
   bool export_all = false;
+  bool export_audio = false;
   bool classify = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -153,6 +156,8 @@ int main(int argc, char** argv) {
       export_dir = value;
     } else if (arg == "--export-all") {
       export_all = true;
+    } else if (arg == "--export-audio") {
+      export_audio = true;
     } else if (arg == "--classify") {
       classify = true;
     } else if (arg == "--help") {
@@ -298,6 +303,7 @@ int main(int argc, char** argv) {
   bool wrote_tim = false;
   std::map<std::string, int> counts;
   std::map<std::string, int> data_heads;
+  std::map<std::string, int> lz_heads;
   for (const auto& blob : disc.entries) {
     if (blob.file.group || blob.file.length <= 0) {
       continue;
@@ -314,6 +320,44 @@ int main(int argc, char** argv) {
     ++counts[name];
     if (classify && classified.kind == psx_cd_loc::FileKind::Data && !classified.detail.empty()) {
       ++data_heads[classified.detail];
+    }
+    if (classify && classified.kind == psx_cd_loc::FileKind::Lz) {
+      const auto words = classified.detail.find("w0=");
+      if (words != std::string::npos) {
+        ++lz_heads[classified.detail.substr(words)];
+      }
+    }
+    if (export_audio && classified.kind == psx_cd_loc::FileKind::Wds && !export_dir.empty()) {
+      std::vector<std::uint8_t> sound;
+      const auto length = static_cast<std::uint32_t>(blob.file.length);
+      const std::uint32_t rounded = psx_cd_loc::user_bytes_covering_sectors(length);
+      if (read_user_span(input, file_size, blob.file.lba, rounded, sound, error)) {
+        const auto exact = std::min(sound.size(), static_cast<std::size_t>(length));
+        const auto bank = psx_cd_loc::parse_wds(std::span<const std::uint8_t>(sound).first(exact));
+        if (bank.has_value()) {
+          const auto blob_bytes =
+              std::span<const std::uint8_t>(sound).subspan(bank->sample_offset, bank->sample_bytes);
+          for (std::size_t sample_index = 0; sample_index < bank->samples.size(); ++sample_index) {
+            const auto& sample = bank->samples[sample_index];
+            if (sample.byte_offset > blob_bytes.size() ||
+                sample.byte_size > blob_bytes.size() - sample.byte_offset) {
+              continue;
+            }
+            const auto pcm = psx_cd_loc::decode_psx_adpcm(
+                blob_bytes.subspan(sample.byte_offset, sample.byte_size));
+            const auto wav = psx_cd_loc::encode_wav(pcm, psx_cd_loc::kSpuNominalRate);
+            const auto path = std::filesystem::path(export_dir) /
+                              ("index-" + std::to_string(blob.file.id) + "-sample-" +
+                               std::to_string(sample_index) + ".wav");
+            std::ofstream output(path, std::ios::binary);
+            if (output) {
+              output.write(reinterpret_cast<const char*>(wav.data()),
+                           static_cast<std::streamsize>(wav.size()));
+              std::cout << "wrote " << path.string() << '\n';
+            }
+          }
+        }
+      }
     }
     if (classify) {
       std::cout << "classify " << blob.file.id << ' ' << blob.file.lba << ' ' << blob.file.length << ' '
@@ -359,6 +403,9 @@ int main(int argc, char** argv) {
     std::cout << '\n';
     for (const auto& head : data_heads) {
       std::cout << "data_head " << head.second << ' ' << head.first << '\n';
+    }
+    for (const auto& head : lz_heads) {
+      std::cout << "lz_head " << head.second << ' ' << head.first << '\n';
     }
   }
   if (!found_tim) {
