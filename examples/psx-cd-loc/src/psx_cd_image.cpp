@@ -212,6 +212,106 @@ std::optional<ResourceFields> resource_fields(std::span<const std::uint8_t> byte
   return fields;
 }
 
+const char* lz_error_text(LzError error) {
+  switch (error) {
+    case LzError::None:
+      return "ok";
+    case LzError::Truncated:
+      return "compressed input ended early";
+    case LzError::BadSize:
+      return "output size is above the 16 MiB limit";
+    case LzError::BackrefRange:
+      return "backreference starts outside the output";
+    case LzError::OutputOverflow:
+      return "token would write past the declared output size";
+  }
+  return "unknown lz error";
+}
+
+std::optional<LzOutput> lz_decompress(std::span<const std::uint8_t> source,
+                                     LzError& error) {
+  if (source.size() < 4) {
+    error = LzError::Truncated;
+    return std::nullopt;
+  }
+  const std::uint32_t declared = read_u32(source, 0);
+  if (declared > kLzMaxOutput) {
+    error = LzError::BadSize;
+    return std::nullopt;
+  }
+  std::size_t ip = 4;
+  auto take = [&](std::uint8_t& out) -> bool {
+    if (ip >= source.size()) {
+      return false;
+    }
+    out = source[ip++];
+    return true;
+  };
+  std::uint8_t flag = 0;
+  if (!take(flag)) {
+    error = LzError::Truncated;
+    return std::nullopt;
+  }
+  LzOutput result;
+  result.bytes.reserve(declared);
+  while (true) {
+    if (result.bytes.size() == declared) {
+      result.source_used = ip;
+      error = LzError::None;
+      return result;
+    }
+    int bits_left = 8;
+    std::uint8_t bit = static_cast<std::uint8_t>(flag & 1u);
+    while (true) {
+      std::uint8_t first = 0;
+      if (!take(first)) {
+        error = LzError::Truncated;
+        return std::nullopt;
+      }
+      flag = static_cast<std::uint8_t>(flag >> 1);
+      --bits_left;
+      if (bit != 0) {
+        std::uint8_t second = 0;
+        if (!take(second)) {
+          error = LzError::Truncated;
+          return std::nullopt;
+        }
+        const std::uint32_t distance =
+            static_cast<std::uint32_t>(first) |
+            (static_cast<std::uint32_t>(second & 0x0Fu) << 8);
+        const std::uint32_t length =
+            static_cast<std::uint32_t>(second >> 4) + 3u;
+        if (distance == 0 || distance > result.bytes.size()) {
+          error = LzError::BackrefRange;
+          return std::nullopt;
+        }
+        if (result.bytes.size() + length > declared) {
+          error = LzError::OutputOverflow;
+          return std::nullopt;
+        }
+        for (std::uint32_t n = 0; n < length; ++n) {
+          result.bytes.push_back(result.bytes[result.bytes.size() - distance]);
+        }
+      } else {
+        if (result.bytes.size() + 1 > declared) {
+          error = LzError::OutputOverflow;
+          return std::nullopt;
+        }
+        result.bytes.push_back(first);
+      }
+      if (bits_left != 0) {
+        bit = static_cast<std::uint8_t>(flag & 1u);
+      } else {
+        if (!take(flag)) {
+          error = LzError::Truncated;
+          return std::nullopt;
+        }
+        break;
+      }
+    }
+  }
+}
+
 std::string sha256_hex(std::span<const std::uint8_t> data) {
   constexpr std::uint32_t k[64] = {
       0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,

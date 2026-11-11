@@ -16,6 +16,7 @@ void usage() {
       << "psx_cd_read --image PATH (--lba N --length BYTES | --record HEX14)\n"
       << "            [--base-lba N] [--output PATH] [--prefix-out PATH]\n"
       << "psx_cd_read --payload FILE [--prefix-out PATH]\n"
+      << "psx_cd_read --lz FILE [--lz-offset N] [--lz-output PATH]\n"
       << "\n"
       << "Read Mode 2 user bytes from a 2352-byte sector image.\n"
       << "LBA is the ISO logical sector. The file offset is\n"
@@ -84,6 +85,9 @@ int main(int argc, char** argv) {
   std::string payload_path;
   std::string output_path;
   std::string prefix_path;
+  std::string lz_path;
+  std::string lz_output;
+  std::uint32_t lz_offset = 0;
   std::string record_hex;
   std::optional<std::uint32_t> lba;
   std::optional<std::uint32_t> length;
@@ -98,7 +102,30 @@ int main(int argc, char** argv) {
       }
       return argv[++i];
     };
-    if (arg == "--payload") {
+    if (arg == "--lz") {
+      const char* value = need("--lz");
+      if (value == nullptr) {
+        return 2;
+      }
+      lz_path = value;
+    } else if (arg == "--lz-output") {
+      const char* value = need("--lz-output");
+      if (value == nullptr) {
+        return 2;
+      }
+      lz_output = value;
+    } else if (arg == "--lz-offset") {
+      const char* value = need("--lz-offset");
+      if (value == nullptr) {
+        return 2;
+      }
+      const auto parsed = parse_u32(value);
+      if (!parsed.has_value()) {
+        std::cerr << "lz-offset is not an unsigned 32-bit integer\n";
+        return 2;
+      }
+      lz_offset = *parsed;
+    } else if (arg == "--payload") {
       const char* value = need("--payload");
       if (value == nullptr) {
         return 2;
@@ -169,13 +196,62 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (image_path.empty() == payload_path.empty()) {
+  const int modes = (image_path.empty() ? 0 : 1) + (payload_path.empty() ? 0 : 1) +
+                    (lz_path.empty() ? 0 : 1);
+  if (modes != 1) {
     usage();
     return 2;
   }
   if (!payload_path.empty() && (lba || length || !record_hex.empty())) {
     std::cerr << "--payload reads a resource file, not a disc range\n";
     return 2;
+  }
+  if (!lz_path.empty()) {
+    std::ifstream input(lz_path, std::ios::binary);
+    if (!input) {
+      std::cerr << "cannot open compressed file\n";
+      return 1;
+    }
+    input.seekg(0, std::ios::end);
+    const auto file_end = input.tellg();
+    if (file_end < 0 || static_cast<std::uint64_t>(lz_offset) > static_cast<std::uint64_t>(file_end)) {
+      std::cerr << psx_cd_loc::lz_error_text(psx_cd_loc::LzError::Truncated) << '\n';
+      return 1;
+    }
+    const auto available = static_cast<std::uint64_t>(file_end) - lz_offset;
+    input.seekg(static_cast<std::streamoff>(lz_offset), std::ios::beg);
+    std::vector<std::uint8_t> compressed(static_cast<std::size_t>(available));
+    if (!compressed.empty()) {
+      input.read(reinterpret_cast<char*>(compressed.data()),
+                 static_cast<std::streamsize>(compressed.size()));
+      if (input.gcount() != static_cast<std::streamsize>(compressed.size())) {
+        std::cerr << psx_cd_loc::lz_error_text(psx_cd_loc::LzError::Truncated) << '\n';
+        return 1;
+      }
+    }
+    psx_cd_loc::LzError lz_error = psx_cd_loc::LzError::None;
+    const auto decoded = psx_cd_loc::lz_decompress(compressed, lz_error);
+    if (!decoded.has_value()) {
+      std::cerr << psx_cd_loc::lz_error_text(lz_error) << '\n';
+      return 1;
+    }
+    if (!lz_output.empty()) {
+      std::ofstream output(lz_output, std::ios::binary);
+      if (!output) {
+        std::cerr << "cannot open lz output\n";
+        return 1;
+      }
+      output.write(reinterpret_cast<const char*>(decoded->bytes.data()),
+                   static_cast<std::streamsize>(decoded->bytes.size()));
+      if (!output) {
+        std::cerr << "cannot write lz output\n";
+        return 1;
+      }
+    }
+    std::cout << "bytes " << decoded->bytes.size() << '\n'
+              << "source_used " << decoded->source_used << '\n'
+              << "sha256 " << psx_cd_loc::sha256_hex(decoded->bytes) << '\n';
+    return 0;
   }
   if (!payload_path.empty()) {
     std::ifstream input(payload_path, std::ios::binary);

@@ -266,6 +266,99 @@ void test_cd_load_feeds_the_resource_fields() {
   CHECK(fields->word_at_40 == 7);
 }
 
+std::vector<std::uint8_t> lz_source(std::uint32_t size, std::uint8_t flag,
+                                     const std::vector<std::uint8_t>& body,
+                                     std::uint8_t trailing_flag) {
+  std::vector<std::uint8_t> source(4 + 1 + body.size() + 1);
+  put_u32(source, 0, size);
+  source[4] = flag;
+  std::copy(body.begin(), body.end(), source.begin() + 5);
+  source.back() = trailing_flag;
+  return source;
+}
+
+void test_lz_literals_backrefs_and_overlap() {
+  psx_cd_loc::LzError error = psx_cd_loc::LzError::None;
+  const auto literals = lz_source(8, 0x00, {1, 2, 3, 4, 5, 6, 7, 8}, 0xFF);
+  const auto plain = psx_cd_loc::lz_decompress(literals, error);
+  CHECK(error == psx_cd_loc::LzError::None);
+  CHECK(plain.has_value());
+  CHECK(plain->bytes.size() == 8);
+  CHECK(plain->bytes[0] == 1 && plain->bytes[7] == 8);
+  CHECK(plain->source_used == literals.size());
+
+  // Bit 0 literal, bits 1..7 overlapping distance-1 copies of length 3.
+  std::vector<std::uint8_t> overlap_body{'a'};
+  for (int i = 0; i < 7; ++i) {
+    overlap_body.push_back(0x01);
+    overlap_body.push_back(0x00);
+  }
+  const auto overlap = lz_source(22, 0xFE, overlap_body, 0);
+  const auto run = psx_cd_loc::lz_decompress(overlap, error);
+  CHECK(error == psx_cd_loc::LzError::None);
+  CHECK(run.has_value());
+  CHECK(run->bytes.size() == 22);
+  CHECK(run->bytes == std::vector<std::uint8_t>(22, 'a'));
+
+  // Two literal flags, then a flag whose top bit copies distance 16.
+  std::vector<std::uint8_t> wide{0, 0, 0, 0, 0x00};
+  for (int i = 0; i < 8; ++i) {
+    const std::uint8_t value = i == 0 ? 0x5A : (i == 7 ? 0x22 : 0x11);
+    wide.push_back(value);
+  }
+  wide.push_back(0x00);
+  for (int i = 0; i < 8; ++i) {
+    wide.push_back(0x11);
+  }
+  wide.push_back(0x80);
+  for (int i = 0; i < 7; ++i) {
+    wide.push_back(0x11);
+  }
+  wide.push_back(0x10);
+  wide.push_back(0x00);
+  wide.push_back(0x00);
+  put_u32(wide, 0, 26);
+  const auto far_out = psx_cd_loc::lz_decompress(wide, error);
+  CHECK(error == psx_cd_loc::LzError::None);
+  CHECK(far_out.has_value());
+  CHECK(far_out->bytes.size() == 26);
+  CHECK(far_out->bytes[0] == 0x5A);
+  CHECK(far_out->bytes[7] == 0x22);
+  CHECK(far_out->bytes[23] == 0x22);
+  CHECK(far_out->bytes[24] == 0x11);
+  CHECK(far_out->bytes[25] == 0x11);
+}
+
+void test_lz_rejects_malformed_input() {
+  psx_cd_loc::LzError error = psx_cd_loc::LzError::None;
+  const std::uint8_t short_src[] = {1, 0, 0};
+  CHECK(!psx_cd_loc::lz_decompress(short_src, error));
+  CHECK(error == psx_cd_loc::LzError::Truncated);
+
+  const auto missing_flag = std::vector<std::uint8_t>{4, 0, 0, 0, 0x00, 1, 2, 3, 4};
+  CHECK(!psx_cd_loc::lz_decompress(missing_flag, error));
+  CHECK(error == psx_cd_loc::LzError::Truncated);
+
+  const auto past_end = lz_source(1, 0x00, {1, 2, 3, 4, 5, 6, 7, 8}, 0);
+  CHECK(!psx_cd_loc::lz_decompress(past_end, error));
+  CHECK(error == psx_cd_loc::LzError::OutputOverflow);
+
+  const auto zero_distance = lz_source(4, 0x02, {'a', 0x00, 0x00}, 0);
+  CHECK(!psx_cd_loc::lz_decompress(zero_distance, error));
+  CHECK(error == psx_cd_loc::LzError::BackrefRange);
+
+  std::vector<std::uint8_t> huge(4);
+  put_u32(huge, 0, psx_cd_loc::kLzMaxOutput + 1);
+  CHECK(!psx_cd_loc::lz_decompress(huge, error));
+  CHECK(error == psx_cd_loc::LzError::BadSize);
+
+  const auto empty = std::vector<std::uint8_t>{0, 0, 0, 0, 0x00};
+  const auto none = psx_cd_loc::lz_decompress(empty, error);
+  CHECK(none.has_value());
+  CHECK(none->bytes.empty());
+  CHECK(none->source_used == 5);
+}
+
 void test_sha256_known_answers() {
   CHECK(psx_cd_loc::sha256_hex({}) ==
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -285,6 +378,8 @@ int main() {
   test_cd_load_reads_byte_length_not_the_rounded_size();
   test_resource_fields_follow_the_loaded_words();
   test_cd_load_feeds_the_resource_fields();
+  test_lz_literals_backrefs_and_overlap();
+  test_lz_rejects_malformed_input();
   test_sha256_known_answers();
   if (failures != 0) {
     std::fprintf(stderr, "%d of %d checks failed\n", failures, checks);

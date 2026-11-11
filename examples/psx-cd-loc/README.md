@@ -74,6 +74,17 @@ zero second-argument path. The copy keeps whole words, so a size of 6 copies
 4 bytes. `--prefix-out` writes that word-aligned prefix. It does not decode
 the bytes inside the prefix.
 
+`--lz FILE` unpacks a bitstream. The first little-endian word is the
+output size. Flag bytes are read lowest bit first: 0 copies one literal
+byte, and 1 is a backreference of length `(high nibble + 3)` at a distance
+of `(low nibble << 8) | first byte`, copied one byte at a time so a
+distance of 1 can repeat the previous byte. The unpack stops when the next
+flag byte is reached and the output already has the declared length; that
+flag byte is consumed. `--lz-offset` starts later in the file.
+`--lz-output` writes the bytes. A short input, a backreference before the
+bytes it names, a token past the declared end, and a declared size above
+16 MiB fail.
+
 Shorter than a full sector, a mode other than 2, a bad sync, a subheader
 whose two copies differ, a header that does not match the logical sector,
 a zero length, and a range that overflows the file index all fail.

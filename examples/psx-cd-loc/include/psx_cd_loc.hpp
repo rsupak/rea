@@ -197,4 +197,31 @@ const char* resource_error_text(ResourceError error);
 std::optional<ResourceFields> resource_fields(std::span<const std::uint8_t> bytes,
                                              ResourceError& error);
 
+// Bitstream unpacker. The first little-endian word is the output size.
+// Each flag byte is eight bits, lowest bit first. 0 copies the next byte.
+// 1 reads two bytes: length is the high nibble plus 3 (3..18), and the
+// distance is the low nibble shifted 8 bits combined with the first byte.
+// Bytes are copied one at a time from output_end - distance, so a distance
+// of 1 repeats the previous byte. A finished output stops at the next flag
+// byte, which is consumed. Declared sizes above 16 MiB are rejected.
+inline constexpr std::uint32_t kLzMaxOutput = 16u * 1024u * 1024u;
+
+enum class LzError {
+  None,
+  Truncated,
+  BadSize,
+  BackrefRange,
+  OutputOverflow,
+};
+
+struct LzOutput {
+  std::vector<std::uint8_t> bytes;
+  std::size_t source_used = 0;
+};
+
+const char* lz_error_text(LzError error);
+
+std::optional<LzOutput> lz_decompress(std::span<const std::uint8_t> source,
+                                     LzError& error);
+
 }  // namespace psx_cd_loc
