@@ -30,7 +30,7 @@ constexpr InferredStream kInferredLz[] = {
 
 void usage() {
   std::cerr
-      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR]\n"
+      << "psx_cd_view (--image BIN | --cue CUE) [--export-dir DIR] [--export-all]\n"
       << "\n"
       << "Read-only. Lists the ISO 9660 files in a MODE2/2352 image, prints\n"
       << "the verified resource at LBA 108754, and unpacks two loader-table\n"
@@ -120,6 +120,7 @@ int main(int argc, char** argv) {
   std::string image_path;
   std::string cue_path;
   std::string export_dir;
+  bool export_all = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     auto need = [&](const char* name) -> const char* {
@@ -147,6 +148,8 @@ int main(int argc, char** argv) {
         return 2;
       }
       export_dir = value;
+    } else if (arg == "--export-all") {
+      export_all = true;
     } else if (arg == "--help") {
       usage();
       return 0;
@@ -341,7 +344,7 @@ int main(int argc, char** argv) {
     found_tim = true;
     std::cout << "index_tim " << item.id << ' ' << item.lba << ' ' << source << ' '
               << picture->width << 'x' << picture->height << '\n';
-    if (!wrote_tim && !export_dir.empty()) {
+    if (!export_dir.empty() && (export_all || !wrote_tim)) {
       const auto ppm = psx_cd_loc::encode_ppm(*picture);
       const auto path =
           std::filesystem::path(export_dir) / ("index-" + std::to_string(item.id) + ".ppm");

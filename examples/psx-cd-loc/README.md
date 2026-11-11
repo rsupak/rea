@@ -151,7 +151,10 @@ On the disc already measured, expect `volume XENOGEARS`, the two ISO files,
 `prefix_bytes 672`, and `lz` lines `bytes=29779` and `bytes=260862` with
 `tim=no`. `index_base 24` is followed by one `index` line per file in the
 executable's table (365 files, including id 2 at LBA 108754 length 61680).
-`index_tim` is printed only for a buffer whose id word is `0x10`.
+`index_tim` is printed when a buffer is a TIM. Pixel width is the header
+value times 4, 2, or 1 for 4-bit, 8-bit, and 16-bit. `--export-all` with
+`--export-dir` writes every such picture; without `--export-all` only the
+first is written.
 
 
 ## Build

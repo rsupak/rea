@@ -194,6 +194,58 @@ void test_tim_16bit_becomes_ppm() {
   CHECK(!psx_cd_loc::decode_tim(text));
 }
 
+void test_tim_4bpp_low_nibble_and_first_clut_row() {
+  std::vector<std::uint8_t> tim(8 + 12 + 16 * 2 * 2 + 12 + 2, 0);
+  put_u32(tim, 0, 0x10);
+  put_u32(tim, 4, 8);
+  put_u32(tim, 8, 12 + 64);
+  put_u16(tim, 16, 16);
+  put_u16(tim, 18, 2);
+  put_u16(tim, 20 + 2, 0x001F);
+  put_u16(tim, 20 + 4, 0x7C00);
+  put_u16(tim, 20 + 34, 0x03E0);
+  const std::size_t pixels = 8 + 12 + 64;
+  put_u32(tim, pixels, 14);
+  put_u16(tim, pixels + 8, 1);
+  put_u16(tim, pixels + 10, 1);
+  tim[pixels + 12] = 0x21;
+  const auto picture = psx_cd_loc::decode_tim(tim);
+  CHECK(picture.has_value());
+  CHECK(picture->width == 4);
+  CHECK(picture->height == 1);
+  CHECK(picture->rgb[0] == 0xF8);
+  CHECK(picture->rgb[1] == 0);
+  CHECK(picture->rgb[3] == 0);
+  CHECK(picture->rgb[5] == 0xF8);
+}
+
+void test_tim_8bpp_width_is_twice_the_halfword_field() {
+  std::vector<std::uint8_t> tim(8 + 12 + 256 * 2 + 12 + 4, 0);
+  put_u32(tim, 0, 0x10);
+  put_u32(tim, 4, 1 | 8);
+  put_u32(tim, 8, 12 + 512);
+  put_u16(tim, 16, 256);
+  put_u16(tim, 18, 1);
+  put_u16(tim, 20 + 2, 0x001F);
+  put_u16(tim, 20 + 4, 0x03E0);
+  const std::size_t pixels = 8 + 12 + 512;
+  put_u32(tim, pixels, 12 + 4);
+  put_u16(tim, pixels + 8, 1);
+  put_u16(tim, pixels + 10, 2);
+  tim[pixels + 12] = 1;
+  tim[pixels + 13] = 2;
+  tim[pixels + 14] = 2;
+  tim[pixels + 15] = 1;
+  const auto picture = psx_cd_loc::decode_tim(tim);
+  CHECK(picture.has_value());
+  CHECK(picture->width == 2);
+  CHECK(picture->height == 2);
+  CHECK(picture->rgb[0] == 0xF8);
+  CHECK(picture->rgb[4] == 0xF8);
+  CHECK(picture->rgb[7] == 0xF8);
+  CHECK(picture->rgb[9] == 0xF8);
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +254,8 @@ int main() {
   test_sector_round_up_supplies_the_trailing_flag();
   test_cue_selects_mode2_file();
   test_tim_16bit_becomes_ppm();
+  test_tim_4bpp_low_nibble_and_first_clut_row();
+  test_tim_8bpp_width_is_twice_the_halfword_field();
   if (failures != 0) {
     std::fprintf(stderr, "%d of %d checks failed\n", failures, checks);
     return 1;

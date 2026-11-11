@@ -242,7 +242,8 @@ std::optional<TimRgb> decode_tim(std::span<const std::uint8_t> bytes) {
     if (block < 12 || cursor + block > bytes.size() || clut_width <= 0 || clut_height <= 0) {
       return std::nullopt;
     }
-    const std::size_t colors = static_cast<std::size_t>(clut_width) * static_cast<std::size_t>(clut_height);
+    const std::size_t colors =
+        static_cast<std::size_t>(clut_width) * static_cast<std::size_t>(clut_height);
     if (12 + colors * 2 > block) {
       return std::nullopt;
     }
@@ -252,44 +253,73 @@ std::optional<TimRgb> decode_tim(std::span<const std::uint8_t> bytes) {
     }
     cursor += block;
   }
-  if (cursor + 12 > bytes.size()) {
+  if (cursor + 12 > bytes.size() || mode > 2) {
     return std::nullopt;
   }
   const std::uint32_t pixel_block = read_u32(bytes, cursor);
-  const int width = read_u16(bytes, cursor + 8);
+  const int width_units = read_u16(bytes, cursor + 8);
   const int height = read_u16(bytes, cursor + 10);
-  if (pixel_block < 12 || cursor + pixel_block > bytes.size() || width <= 0 || height <= 0) {
+  if (pixel_block < 12 || cursor + pixel_block > bytes.size() || width_units <= 0 || height <= 0) {
     return std::nullopt;
   }
   const auto pixels = bytes.subspan(cursor + 12, pixel_block - 12);
+  const int bytes_per_row = width_units * 2;
+  int pixel_width = width_units;
+  if (mode == 0) {
+    pixel_width = width_units * 4;
+  } else if (mode == 1) {
+    pixel_width = width_units * 2;
+  }
+  if (has_clut && clut_width < (mode == 0 ? 16 : 256)) {
+    return std::nullopt;
+  }
+  if (!has_clut && mode != 2) {
+    return std::nullopt;
+  }
+  const std::size_t need = static_cast<std::size_t>(bytes_per_row) * static_cast<std::size_t>(height);
+  if (pixels.size() < need) {
+    return std::nullopt;
+  }
   TimRgb picture;
-  picture.width = width;
+  picture.width = pixel_width;
   picture.height = height;
-  picture.rgb.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3);
+  picture.rgb.assign(static_cast<std::size_t>(pixel_width) * static_cast<std::size_t>(height) * 3, 0);
   auto expand = [](std::uint16_t color, std::uint8_t* rgb) {
     rgb[0] = static_cast<std::uint8_t>((color & 0x1Fu) << 3);
     rgb[1] = static_cast<std::uint8_t>(((color >> 5) & 0x1Fu) << 3);
     rgb[2] = static_cast<std::uint8_t>(((color >> 10) & 0x1Fu) << 3);
   };
-  if (mode == 2 && !has_clut) {
-    if (pixels.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 2) {
-      return std::nullopt;
-    }
-    for (int i = 0; i < width * height; ++i) {
-      expand(read_u16(pixels, static_cast<std::size_t>(i) * 2), picture.rgb.data() + static_cast<std::size_t>(i) * 3);
-    }
-    return picture;
-  }
-  if (mode == 1 && has_clut && clut_width >= 256) {
-    if (pixels.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) {
-      return std::nullopt;
-    }
-    for (int i = 0; i < width * height; ++i) {
-      expand(clut[pixels[static_cast<std::size_t>(i)]], picture.rgb.data() + static_cast<std::size_t>(i) * 3);
+  auto put = [&](int x, int y, std::uint16_t color) {
+    expand(color, picture.rgb.data() + (static_cast<std::size_t>(y) * static_cast<std::size_t>(pixel_width) +
+                                        static_cast<std::size_t>(x)) *
+                                           3);
+  };
+  if (mode == 2) {
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < pixel_width; ++x) {
+        put(x, y, read_u16(pixels, static_cast<std::size_t>(y) * static_cast<std::size_t>(bytes_per_row) +
+                                      static_cast<std::size_t>(x) * 2));
+      }
     }
     return picture;
   }
-  return std::nullopt;
+  const auto* palette = clut.data();
+  for (int y = 0; y < height; ++y) {
+    const auto row = pixels.subspan(static_cast<std::size_t>(y) * static_cast<std::size_t>(bytes_per_row),
+                                    static_cast<std::size_t>(bytes_per_row));
+    for (int x = 0; x < pixel_width; ++x) {
+      std::uint8_t index = 0;
+      if (mode == 0) {
+        const std::uint8_t packed = row[static_cast<std::size_t>(x / 2)];
+        index = (x & 1) == 0 ? static_cast<std::uint8_t>(packed & 0x0F)
+                             : static_cast<std::uint8_t>(packed >> 4);
+      } else {
+        index = row[static_cast<std::size_t>(x)];
+      }
+      put(x, y, palette[index]);
+    }
+  }
+  return picture;
 }
 
 std::vector<std::uint8_t> encode_ppm(const TimRgb& picture) {

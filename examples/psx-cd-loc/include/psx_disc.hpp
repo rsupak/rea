@@ -68,7 +68,10 @@ struct TimRgb {
   std::vector<std::uint8_t> rgb;
 };
 
-// 16-bit direct color, or 8-bit with a CLUT. Other pixel modes are refused.
+// Standard TIM. The pixel width field is in 16-bit units: 4bpp pixels are
+// width*4, 8bpp width*2, and 16bpp width*1. Bytes per row are width*2.
+// 4bpp uses the low nibble as the first pixel. Multiple CLUT rows are
+// alternate palettes; row 0 is used. 24bpp is refused.
 std::optional<TimRgb> decode_tim(std::span<const std::uint8_t> bytes);
 
 // Binary PPM (P6). Empty when the picture is empty.
