@@ -10,9 +10,10 @@ at 75 frames per second, the lead-in between a logical sector and the absolute
 minute/second/frame a `Setloc` parameter uses. The byte length, when it is a
 nonnegative transfer size, is rounded up to a multiple of 4.
 
-This library does not send a command, open a file, allocate a destination, or
-read a disc. Passing the checks does not show that any original program took
-a particular branch, and it does not show that a drive returned data.
+The position helpers do not send a command. `psx_cd_read` copies user bytes
+from a 2352-byte Mode 2 image the caller points at. It does not program DMA
+or emulate a drive. Passing the synthetic checks does not show that any
+original program took a particular branch.
 
 ## Which startup value selects the CD request
 
@@ -39,12 +40,58 @@ for a later read is not a direct call from the straight-line prefix that
 issues `Setloc`. The checks below are synthetic values of this contract.
 They are not a trace of an original executable.
 
+## Mode 2 user bytes
+
+A disc image is indexed by the ISO logical sector. Sector 0 is the first
+2352 bytes of the file. The absolute minute/second/frame stored in the
+sector header is that logical sector plus 150, and the reader checks it.
+The 150-frame lead-in is not added to the file offset.
+
+Each sector contributes at most 2048 bytes from raw offset 24. The requested
+length is exact: thirty full blocks and a 240-byte tail are 61440 + 240
+bytes, and the tail is the leading user bytes of the last sector, not a
+2340-byte whole-sector block. `read_cd_load` uses the record's byte length,
+not the 4-byte-rounded allocation size.
+
+`--base-lba` is for a file that begins at a later logical sector. A full
+disc image uses the default, 0.
+
+```bash
+psx_cd_read --image DISC.BIN --lba LOGICAL --length BYTES --output user.bin
+psx_cd_read --image EXTRACT.BIN --base-lba FIRST --lba LOGICAL --length BYTES
+```
+
+`--record` takes 14 hex digits, one 7-byte index record, and reads that
+record's logical sector and byte length. The tool prints the user-byte
+count, the sector count, and the SHA-256 of the user bytes.
+
+Shorter than a full sector, a mode other than 2, a bad sync, a subheader
+whose two copies differ, a header that does not match the logical sector,
+a zero length, and a range that overflows the file index all fail.
+
+Direct build, from this directory:
+
+```bash
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+  -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_cd_read_main.cpp \
+  -o psx_cd_read
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+  -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp tests/cd_loc_test.cpp \
+  -o psx_cd_loc_tests
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+  -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp tests/cd_image_test.cpp \
+  -o psx_cd_image_tests
+```
+
 ## Public references
 
 - `Setloc` (command `02h`) takes three BCD bytes: minute, second, sector:
   <https://www.problemkaputt.de/psxspx-cdromdrive.htm>
 - The same chapter, including 75 frames per second:
   <https://psx-spx.consoledev.net/cdromdrive/>
+- Mode 2 sector layout (12-byte sync, 4-byte header, 8-byte subheader,
+  2048-byte user data):
+  <https://problemkaputt.de/psx-spx.htm#cdromsectorencoding>
 - The host file calls on the other startup branch (`PCInit`, `PCOpen`,
   `PCRead`, `PClSeek`) are break functions `101h`, `103h`, `105h`, and `107h`:
   <https://problemkaputt.de/psxspx-bios-pc-file-server.htm>

@@ -1,8 +1,9 @@
 #pragma once
 
 // Logical CD sector position and the 7-byte index record that carries one.
-// This converts numbers. It does not issue a drive command, open a file,
-// allocate a buffer, or read a sector.
+// The position and index helpers convert numbers. They do not issue a drive
+// command. The Mode 2 reader copies user bytes out of an image buffer the
+// caller already has. It does not program DMA or emulate a drive.
 //
 // A logical sector is counted from the start of the data area. The position
 // helper adds 150 frames first (2 seconds * 75 frames/second), which is the
@@ -18,9 +19,12 @@
 // The helper also has a separate branch for negative lengths; that branch is
 // not a byte-count alignment and is not exposed here.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace psx_cd_loc {
 
@@ -79,9 +83,9 @@ std::optional<std::uint32_t> record_index(std::uint32_t slot,
                                           std::int32_t adjustment);
 
 // The CD request formed from one record: absolute position plus the byte
-// length that is allocated and retained. This does not send Setloc, program
-// DMA, or read a sector. The straight-line prefix positions with Setloc;
-// the DMA read helper is not a direct call from that prefix.
+// length that is allocated and retained. Forming the request does not send
+// Setloc or read a sector. read_cd_load copies that byte length from an
+// image. The captured transfer copied byte_length, not a wider rounded size.
 struct CdLoad {
   std::uint32_t logical_sector = 0;
   BcdMsf position{};
@@ -98,5 +102,71 @@ std::optional<IndexRecord> decode_index_record(
 // Next multiple of 4, including the value itself when it is already aligned.
 // Empty when byte_length is negative or byte_length + 3 overflows signed 32-bit.
 std::optional<std::uint32_t> aligned_byte_length(std::int32_t byte_length);
+
+// A 2352-byte Mode 2 sector, as transferred: 12-byte sync, then 12 bytes at
+// raw offset 12 (BCD minute/second/frame, mode, and the 8-byte subheader),
+// then up to 2048 user bytes at raw offset 24. The file index is the ISO
+// logical sector. Absolute minute/second/frame is that sector plus 150, and
+// is not added to the file offset. A read copies exactly the requested user
+// byte count; the last sector contributes only the leading leftover bytes.
+inline constexpr std::uint64_t kRawSectorBytes = 2352;
+inline constexpr std::uint32_t kUserBytesPerSector = 2048;
+inline constexpr std::uint32_t kSectorHeaderBytes = 12;
+inline constexpr std::uint32_t kUserDataOffset = 24;
+inline constexpr std::uint8_t kMode2 = 2;
+
+enum class ImageError {
+  None,
+  EmptyLength,
+  RangeOverflow,
+  Truncated,
+  BadSync,
+  UnsupportedMode,
+  BadSubheader,
+  MsfMismatch,
+};
+
+struct Mode2Range {
+  std::uint64_t file_offset = 0;
+  std::uint64_t raw_bytes = 0;
+  std::uint32_t sector_count = 0;
+};
+
+struct Mode2Sector {
+  std::uint32_t iso_lba = 0;
+  BcdMsf absolute_msf{};
+  std::uint8_t mode = 0;
+  std::uint8_t submode = 0;
+  std::array<std::uint8_t, kSectorHeaderBytes> header{};
+  std::uint32_t user_bytes_taken = 0;
+};
+
+struct Mode2Read {
+  std::vector<std::uint8_t> user;
+  std::vector<Mode2Sector> sectors;
+};
+
+const char* image_error_text(ImageError error);
+
+// File offset of the ISO sector, relative to base_lba. base_lba 0 is a disc
+// image whose first sector is logical sector 0. A bounded extract of a later
+// range uses that range's first logical sector as base_lba.
+std::optional<Mode2Range> mode2_user_range(std::uint32_t iso_lba,
+                                           std::uint32_t user_bytes,
+                                           std::uint32_t base_lba,
+                                           ImageError& error);
+
+std::optional<Mode2Read> read_mode2_user(std::span<const std::uint8_t> image,
+                                         std::uint32_t iso_lba,
+                                         std::uint32_t user_bytes,
+                                         std::uint32_t base_lba,
+                                         ImageError& error);
+
+std::optional<Mode2Read> read_cd_load(std::span<const std::uint8_t> image,
+                                      const CdLoad& load,
+                                      std::uint32_t base_lba,
+                                      ImageError& error);
+
+std::string sha256_hex(std::span<const std::uint8_t> data);
 
 }  // namespace psx_cd_loc
