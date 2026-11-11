@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-clang++ -std=c++20 -Wall -Wextra -Wpedantic -ObjC++ \
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -ObjC++ -fobjc-arc \
   -I include \
   src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp src/psx_catalog.cpp \
   src/XenoNative.mm \
