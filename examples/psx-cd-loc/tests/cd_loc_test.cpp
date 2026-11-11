@@ -1,5 +1,6 @@
 #include "psx_cd_loc.hpp"
 
+#include <array>
 #include <cstdio>
 #include <cstdint>
 #include <span>
@@ -91,6 +92,62 @@ void test_index_record_is_seven_little_endian_bytes() {
   CHECK(!psx_cd_loc::decode_index_record(std::span<const std::uint8_t>{}).has_value());
 }
 
+void test_mode_minus_one_shares_cd_init_and_stores_zero() {
+  const psx_cd_loc::StartupDispatch minus_one =
+      psx_cd_loc::dispatch_for_mode(-1);
+  CHECK(minus_one.init == psx_cd_loc::StartupPath::Cd);
+  CHECK(minus_one.fixed_range_copy == false);
+  CHECK(minus_one.later_cell == 0);
+  CHECK(minus_one.transfer == psx_cd_loc::StartupPath::Cd);
+
+  const psx_cd_loc::StartupDispatch zero = psx_cd_loc::dispatch_for_mode(0);
+  CHECK(zero.init == psx_cd_loc::StartupPath::Cd);
+  CHECK(zero.fixed_range_copy == true);
+  CHECK(zero.later_cell == 0);
+  CHECK(zero.transfer == psx_cd_loc::StartupPath::Cd);
+}
+
+void test_other_modes_stay_on_the_host_path() {
+  const psx_cd_loc::StartupDispatch one = psx_cd_loc::dispatch_for_mode(1);
+  CHECK(one.init == psx_cd_loc::StartupPath::Host);
+  CHECK(one.fixed_range_copy == false);
+  CHECK(one.later_cell == 1);
+  CHECK(one.transfer == psx_cd_loc::StartupPath::Host);
+
+  const psx_cd_loc::StartupDispatch minus_two =
+      psx_cd_loc::dispatch_for_mode(-2);
+  CHECK(minus_two.init == psx_cd_loc::StartupPath::Host);
+  CHECK(minus_two.later_cell == -2);
+  CHECK(minus_two.transfer == psx_cd_loc::StartupPath::Host);
+}
+
+void test_record_index_uses_halfword_adjustment() {
+  CHECK(psx_cd_loc::index_adjustment(0) == 0);
+  CHECK(psx_cd_loc::index_adjustment(10) == 9);
+  const auto index = psx_cd_loc::record_index(3, 9);
+  CHECK(index.has_value());
+  CHECK(*index == 11);
+  CHECK(!psx_cd_loc::record_index(0, 0).has_value());
+}
+
+void test_cd_load_carries_position_and_aligned_length() {
+  const auto record =
+      psx_cd_loc::decode_index_record(
+          std::array<std::uint8_t, 7>{0x96, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00});
+  CHECK(record.has_value());
+  const auto load = psx_cd_loc::cd_load_from_record(*record);
+  CHECK(load.has_value());
+  CHECK(load->logical_sector == 150);
+  CHECK(load->position == psx_cd_loc::BcdMsf{0x00, 0x04, 0x00});
+  CHECK(load->byte_length == 5);
+  CHECK(load->aligned_length == 8);
+
+  psx_cd_loc::IndexRecord huge;
+  huge.logical_sector = 0;
+  huge.byte_length = 0x80000000u;
+  CHECK(!psx_cd_loc::cd_load_from_record(huge).has_value());
+}
+
 void test_byte_length_rounds_up_to_four() {
   const auto zero = psx_cd_loc::aligned_byte_length(0);
   const auto one = psx_cd_loc::aligned_byte_length(1);
@@ -113,6 +170,10 @@ int main() {
   test_minute_and_ten_second_nibbles();
   test_sector_domain_stops_at_signed_add();
   test_index_record_is_seven_little_endian_bytes();
+  test_mode_minus_one_shares_cd_init_and_stores_zero();
+  test_other_modes_stay_on_the_host_path();
+  test_record_index_uses_halfword_adjustment();
+  test_cd_load_carries_position_and_aligned_length();
   test_byte_length_rounds_up_to_four();
   if (failures != 0) {
     std::fprintf(stderr, "%d of %d checks failed\n", failures, checks);

@@ -41,6 +41,54 @@ std::optional<IndexRecord> decode_index_record(
   return record;
 }
 
+StartupDispatch dispatch_for_mode(std::int32_t mode) {
+  StartupDispatch result;
+  const bool retail_cd = mode == 0 || mode == -1;
+  result.init = retail_cd ? StartupPath::Cd : StartupPath::Host;
+  result.fixed_range_copy = mode == 0;
+  result.later_cell = retail_cd ? 0 : mode;
+  result.transfer =
+      result.later_cell == 0 ? StartupPath::Cd : StartupPath::Host;
+  return result;
+}
+
+std::int32_t index_adjustment(std::uint16_t halfword) {
+  if (halfword == 0) {
+    return 0;
+  }
+  return static_cast<std::int32_t>(halfword) - 1;
+}
+
+std::optional<std::uint32_t> record_index(std::uint32_t slot,
+                                          std::int32_t adjustment) {
+  const auto index = static_cast<std::int64_t>(slot) + adjustment - 1;
+  if (index < 0 || index > static_cast<std::int64_t>(kSignedMax)) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint32_t>(index);
+}
+
+std::optional<CdLoad> cd_load_from_record(const IndexRecord& record) {
+  const auto position = logical_sector_to_bcd_msf(record.logical_sector);
+  if (!position.has_value()) {
+    return std::nullopt;
+  }
+  if (record.byte_length > kSignedMax) {
+    return std::nullopt;
+  }
+  const auto aligned =
+      aligned_byte_length(static_cast<std::int32_t>(record.byte_length));
+  if (!aligned.has_value()) {
+    return std::nullopt;
+  }
+  CdLoad load;
+  load.logical_sector = record.logical_sector;
+  load.position = *position;
+  load.byte_length = record.byte_length;
+  load.aligned_length = *aligned;
+  return load;
+}
+
 std::optional<std::uint32_t> aligned_byte_length(std::int32_t byte_length) {
   if (byte_length < 0) {
     return std::nullopt;

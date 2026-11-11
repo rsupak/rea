@@ -14,12 +14,30 @@ This library does not send a command, open a file, allocate a destination, or
 read a disc. Passing the checks does not show that any original program took
 a particular branch, and it does not show that a drive returned data.
 
-Which branch a program takes is a separate fact. One examined startup word
-selects a development-host file read and skips both the controller init and
-the `Setloc` that would consume these BCD bytes. The conversion is still the
-position encoding on the other side of that word. The tests below are
-synthetic values of this contract. They are not measurements from a disc and
-not a run of an original executable.
+## Which startup value selects the CD request
+
+An earlier note in this file said a nonzero mode word selects the
+development-host file server and skips CD init. That was wrong. The init
+test is two compares: the value 0 takes the CD call, and the value -1 is
+compared with a register just set to -1 and falls through into the same CD
+call. Only a value that is neither 0 nor -1 takes the host init break.
+A stepped run with the file value -1 reached that CD call. It stopped at
+the BIOS console write of the init banner, before the call returned.
+
+The transfer test is not the same compare. After a nonzero return from
+init, both 0 and -1 store 0 into the cell the later test reads. That later
+test is only "cell == 0". Zero takes the indexed CD request: `Setloc` of
+the record's BCD position, and the record's byte length is what gets
+allocated. A nonzero cell is the host read. Mode 0 also schedules a
+fixed-size copy that mode -1 skips. The low-address host filenames are
+computed from a nonzero cell; they are not the path taken once -1 has been
+stored as 0.
+
+`dispatch_for_mode` and `cd_load_from_record` are those two facts. They do
+not send a command or claim a sector was transferred. The DMA programming
+for a later read is not a direct call from the straight-line prefix that
+issues `Setloc`. The checks below are synthetic values of this contract.
+They are not a trace of an original executable.
 
 ## Public references
 
