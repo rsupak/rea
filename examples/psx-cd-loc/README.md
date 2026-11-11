@@ -65,6 +65,15 @@ psx_cd_read --image EXTRACT.BIN --base-lba FIRST --lba LOGICAL --length BYTES
 record's logical sector and byte length. The tool prints the user-byte
 count, the sector count, and the SHA-256 of the user bytes.
 
+`--payload FILE` reads a resource that was already copied out of the image.
+The first consumer loads five little-endian fields and does not compare a
+tag: the word at offset 16 is the prefix size, the word at offset 20 and the
+halfword at offset 30 travel with it, the word at offset 24 is an offset
+from the start of the resource, and the word at offset 40 is loaded on the
+zero second-argument path. The copy keeps whole words, so a size of 6 copies
+4 bytes. `--prefix-out` writes that word-aligned prefix. It does not decode
+the bytes inside the prefix.
+
 Shorter than a full sector, a mode other than 2, a bad sync, a subheader
 whose two copies differ, a header that does not match the logical sector,
 a zero length, and a range that overflows the file index all fail.

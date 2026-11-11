@@ -163,6 +163,55 @@ std::optional<Mode2Read> read_cd_load(std::span<const std::uint8_t> image,
                          error);
 }
 
+const char* resource_error_text(ResourceError error) {
+  switch (error) {
+    case ResourceError::None:
+      return "ok";
+    case ResourceError::TooSmall:
+      return "resource is shorter than the loaded header";
+    case ResourceError::PrefixPastEnd:
+      return "prefix length passes the end of the resource";
+    case ResourceError::TailPastEnd:
+      return "tail offset passes the end of the resource";
+  }
+  return "unknown resource error";
+}
+
+static std::uint32_t read_u32(std::span<const std::uint8_t> bytes, std::size_t offset) {
+  return static_cast<std::uint32_t>(bytes[offset]) |
+         (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
+         (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
+         (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+std::optional<ResourceFields> resource_fields(std::span<const std::uint8_t> bytes,
+                                             ResourceError& error) {
+  constexpr std::size_t kHeaderBytes = 44;
+  if (bytes.size() < kHeaderBytes) {
+    error = ResourceError::TooSmall;
+    return std::nullopt;
+  }
+  ResourceFields fields;
+  fields.prefix_bytes = read_u32(bytes, 16);
+  fields.copied_bytes = fields.prefix_bytes & ~std::uint32_t{3};
+  fields.companion = read_u32(bytes, 20);
+  fields.tail_offset = read_u32(bytes, 24);
+  fields.half_at_30 = static_cast<std::uint16_t>(bytes[30] |
+                                                 (static_cast<std::uint16_t>(bytes[31]) << 8));
+  fields.word_at_40 = read_u32(bytes, 40);
+  if (static_cast<std::uint64_t>(fields.prefix_bytes) > bytes.size() ||
+      static_cast<std::uint64_t>(fields.copied_bytes) > bytes.size()) {
+    error = ResourceError::PrefixPastEnd;
+    return std::nullopt;
+  }
+  if (static_cast<std::uint64_t>(fields.tail_offset) > bytes.size()) {
+    error = ResourceError::TailPastEnd;
+    return std::nullopt;
+  }
+  error = ResourceError::None;
+  return fields;
+}
+
 std::string sha256_hex(std::span<const std::uint8_t> data) {
   constexpr std::uint32_t k[64] = {
       0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,

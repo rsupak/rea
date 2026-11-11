@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -12,7 +14,8 @@ namespace {
 void usage() {
   std::cerr
       << "psx_cd_read --image PATH (--lba N --length BYTES | --record HEX14)\n"
-      << "            [--base-lba N] [--output PATH]\n"
+      << "            [--base-lba N] [--output PATH] [--prefix-out PATH]\n"
+      << "psx_cd_read --payload FILE [--prefix-out PATH]\n"
       << "\n"
       << "Read Mode 2 user bytes from a 2352-byte sector image.\n"
       << "LBA is the ISO logical sector. The file offset is\n"
@@ -78,7 +81,9 @@ std::optional<psx_cd_loc::CdLoad> load_from_record(const std::string& hex) {
 
 int main(int argc, char** argv) {
   std::string image_path;
+  std::string payload_path;
   std::string output_path;
+  std::string prefix_path;
   std::string record_hex;
   std::optional<std::uint32_t> lba;
   std::optional<std::uint32_t> length;
@@ -93,7 +98,19 @@ int main(int argc, char** argv) {
       }
       return argv[++i];
     };
-    if (arg == "--image") {
+    if (arg == "--payload") {
+      const char* value = need("--payload");
+      if (value == nullptr) {
+        return 2;
+      }
+      payload_path = value;
+    } else if (arg == "--prefix-out") {
+      const char* value = need("--prefix-out");
+      if (value == nullptr) {
+        return 2;
+      }
+      prefix_path = value;
+    } else if (arg == "--image") {
       const char* value = need("--image");
       if (value == nullptr) {
         return 2;
@@ -152,10 +169,52 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (image_path.empty()) {
+  if (image_path.empty() == payload_path.empty()) {
     usage();
     return 2;
   }
+  if (!payload_path.empty() && (lba || length || !record_hex.empty())) {
+    std::cerr << "--payload reads a resource file, not a disc range\n";
+    return 2;
+  }
+  if (!payload_path.empty()) {
+    std::ifstream input(payload_path, std::ios::binary);
+    if (!input) {
+      std::cerr << "cannot open payload\n";
+      return 1;
+    }
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                    std::istreambuf_iterator<char>());
+    psx_cd_loc::ResourceError resource_error = psx_cd_loc::ResourceError::None;
+    const auto fields = psx_cd_loc::resource_fields(bytes, resource_error);
+    if (!fields.has_value()) {
+      std::cerr << psx_cd_loc::resource_error_text(resource_error) << '\n';
+      return 1;
+    }
+    const auto prefix = std::span<const std::uint8_t>(bytes).subspan(0, fields->copied_bytes);
+    if (!prefix_path.empty()) {
+      std::ofstream output(prefix_path, std::ios::binary);
+      if (!output) {
+        std::cerr << "cannot open prefix output\n";
+        return 1;
+      }
+      output.write(reinterpret_cast<const char*>(prefix.data()),
+                   static_cast<std::streamsize>(prefix.size()));
+      if (!output) {
+        std::cerr << "cannot write prefix\n";
+        return 1;
+      }
+    }
+    std::cout << "prefix_bytes " << fields->prefix_bytes << '\n'
+              << "copied_bytes " << fields->copied_bytes << '\n'
+              << "companion " << fields->companion << '\n'
+              << "tail_offset " << fields->tail_offset << '\n'
+              << "half_at_30 " << fields->half_at_30 << '\n'
+              << "word_at_40 " << fields->word_at_40 << '\n'
+              << "sha256 " << psx_cd_loc::sha256_hex(prefix) << '\n';
+    return 0;
+  }
+
   const bool have_record = !record_hex.empty();
   const bool have_explicit = lba.has_value() || length.has_value();
   if (have_record == have_explicit || (have_explicit && (!lba || !length))) {
@@ -229,5 +288,30 @@ int main(int argc, char** argv) {
   std::cout << "bytes " << read->user.size() << '\n'
             << "sectors " << read->sectors.size() << '\n'
             << "sha256 " << psx_cd_loc::sha256_hex(read->user) << '\n';
+  if (!prefix_path.empty()) {
+    psx_cd_loc::ResourceError resource_error = psx_cd_loc::ResourceError::None;
+    const auto fields = psx_cd_loc::resource_fields(read->user, resource_error);
+    if (!fields.has_value()) {
+      std::cerr << psx_cd_loc::resource_error_text(resource_error) << '\n';
+      return 1;
+    }
+    std::ofstream prefix(prefix_path, std::ios::binary);
+    if (!prefix) {
+      std::cerr << "cannot open prefix output\n";
+      return 1;
+    }
+    prefix.write(reinterpret_cast<const char*>(read->user.data()),
+                 static_cast<std::streamsize>(fields->copied_bytes));
+    if (!prefix) {
+      std::cerr << "cannot write prefix\n";
+      return 1;
+    }
+    std::cout << "prefix_bytes " << fields->prefix_bytes << '\n'
+              << "copied_bytes " << fields->copied_bytes << '\n'
+              << "companion " << fields->companion << '\n'
+              << "tail_offset " << fields->tail_offset << '\n'
+              << "half_at_30 " << fields->half_at_30 << '\n'
+              << "word_at_40 " << fields->word_at_40 << '\n';
+  }
   return 0;
 }

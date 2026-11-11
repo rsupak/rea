@@ -169,4 +169,32 @@ std::optional<Mode2Read> read_cd_load(std::span<const std::uint8_t> image,
 
 std::string sha256_hex(std::span<const std::uint8_t> data);
 
+// Fields the first consumer loads from the resource. The word at offset 16 is
+// the prefix size passed to allocation and to the 16-byte copy. That copy
+// keeps whole words only, so the copied length is prefix_bytes with the low
+// two bits cleared. The word at offset 24 is added to the resource base and
+// passed on as a pointer. The word at offset 20 and the halfword at offset 30
+// are passed on with it. On the zero second-argument path, the word at offset
+// 40 is loaded and can be returned unchanged. No tag is compared.
+enum class ResourceError {
+  None,
+  TooSmall,
+  PrefixPastEnd,
+  TailPastEnd,
+};
+
+struct ResourceFields {
+  std::uint32_t prefix_bytes = 0;
+  std::uint32_t copied_bytes = 0;
+  std::uint32_t companion = 0;
+  std::uint32_t tail_offset = 0;
+  std::uint16_t half_at_30 = 0;
+  std::uint32_t word_at_40 = 0;
+};
+
+const char* resource_error_text(ResourceError error);
+
+std::optional<ResourceFields> resource_fields(std::span<const std::uint8_t> bytes,
+                                             ResourceError& error);
+
 }  // namespace psx_cd_loc

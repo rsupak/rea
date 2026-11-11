@@ -196,6 +196,76 @@ void test_cd_load_reads_byte_length_not_the_rounded_size() {
   CHECK(read->user[4] == 5);
 }
 
+void put_u32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value);
+  bytes[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+  bytes[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+  bytes[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+}
+
+void test_resource_fields_follow_the_loaded_words() {
+  std::vector<std::uint8_t> bytes(48, 0);
+  put_u32(bytes, 16, 8);
+  put_u32(bytes, 20, 3);
+  put_u32(bytes, 24, 8);
+  bytes[30] = 0x34;
+  bytes[31] = 0x12;
+  put_u32(bytes, 40, 9);
+  bytes[0] = 0xAA;
+  bytes[7] = 0xBB;
+  psx_cd_loc::ResourceError error = psx_cd_loc::ResourceError::None;
+  const auto fields = psx_cd_loc::resource_fields(bytes, error);
+  CHECK(error == psx_cd_loc::ResourceError::None);
+  CHECK(fields.has_value());
+  CHECK(fields->prefix_bytes == 8);
+  CHECK(fields->copied_bytes == 8);
+  CHECK(fields->companion == 3);
+  CHECK(fields->tail_offset == 8);
+  CHECK(fields->half_at_30 == 0x1234);
+  CHECK(fields->word_at_40 == 9);
+
+  put_u32(bytes, 16, 6);
+  const auto clipped = psx_cd_loc::resource_fields(bytes, error);
+  CHECK(clipped.has_value());
+  CHECK(clipped->prefix_bytes == 6);
+  CHECK(clipped->copied_bytes == 4);
+
+  CHECK(!psx_cd_loc::resource_fields(std::span<const std::uint8_t>(bytes.data(), 43), error));
+  CHECK(error == psx_cd_loc::ResourceError::TooSmall);
+  put_u32(bytes, 16, 49);
+  CHECK(!psx_cd_loc::resource_fields(bytes, error));
+  CHECK(error == psx_cd_loc::ResourceError::PrefixPastEnd);
+  put_u32(bytes, 16, 8);
+  put_u32(bytes, 24, 49);
+  CHECK(!psx_cd_loc::resource_fields(bytes, error));
+  CHECK(error == psx_cd_loc::ResourceError::TailPastEnd);
+}
+
+void test_cd_load_feeds_the_resource_fields() {
+  std::vector<std::uint8_t> user(48, 0);
+  put_u32(user, 16, 16);
+  put_u32(user, 20, 4);
+  put_u32(user, 24, 16);
+  put_u32(user, 40, 7);
+  const std::uint8_t record_bytes[] = {0x04, 0x00, 0x00, 48, 0x00, 0x00, 0x00};
+  const auto record = psx_cd_loc::decode_index_record(record_bytes);
+  const auto load = psx_cd_loc::cd_load_from_record(*record);
+  CHECK(load.has_value());
+  auto image = image_from(load->logical_sector, {user});
+  psx_cd_loc::ImageError image_error = psx_cd_loc::ImageError::None;
+  const auto read =
+      psx_cd_loc::read_cd_load(image, *load, load->logical_sector, image_error);
+  CHECK(image_error == psx_cd_loc::ImageError::None);
+  CHECK(read.has_value());
+  psx_cd_loc::ResourceError error = psx_cd_loc::ResourceError::None;
+  const auto fields = psx_cd_loc::resource_fields(read->user, error);
+  CHECK(fields.has_value());
+  CHECK(fields->prefix_bytes == 16);
+  CHECK(fields->companion == 4);
+  CHECK(fields->tail_offset == 16);
+  CHECK(fields->word_at_40 == 7);
+}
+
 void test_sha256_known_answers() {
   CHECK(psx_cd_loc::sha256_hex({}) ==
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -213,6 +283,8 @@ int main() {
   test_exact_sector_does_not_pull_the_next_one();
   test_layout_and_range_failures();
   test_cd_load_reads_byte_length_not_the_rounded_size();
+  test_resource_fields_follow_the_loaded_words();
+  test_cd_load_feeds_the_resource_fields();
   test_sha256_known_answers();
   if (failures != 0) {
     std::fprintf(stderr, "%d of %d checks failed\n", failures, checks);
