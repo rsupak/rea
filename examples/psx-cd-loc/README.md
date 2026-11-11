@@ -116,6 +116,33 @@ clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
   `PCRead`, `PClSeek`) are break functions `101h`, `103h`, `105h`, and `107h`:
   <https://problemkaputt.de/psxspx-bios-pc-file-server.htm>
 
+## Standalone disc view
+
+`psx_cd_view` is a read-only program. It does not link to an emulator.
+Pass a MODE2/2352 BIN, or a CUE whose first data track is MODE2/2352.
+It lists the ISO 9660 volume, prints the resource at logical sector
+108754 (61680 user bytes) using the field offsets the consumer loads,
+and unpacks two streams whose sectors come from the loader table. Those
+two sector numbers were not a captured `Setloc`. A PPM file is written
+only when unpacked bytes start with TIM id `0x10` and the block sizes fit.
+The captured heads of those streams do not.
+
+From this directory, one command on Apple clang:
+
+```bash
+clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+  -I include src/psx_cd_loc.cpp src/psx_cd_image.cpp src/psx_disc.cpp \
+  src/psx_cd_view_main.cpp -o psx_cd_view
+```
+
+The shared headers use `std::span`, so this is C++20. Apple clang 21 accepts
+that standard.
+
+```bash
+psx_cd_view --cue "/path/to/SLUS-00664.CUE"
+psx_cd_view --image "/path/to/SLUS-00664.BIN"
+```
+
 ## Build
 
 From this directory, with a C++20 compiler:

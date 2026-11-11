@@ -1,0 +1,63 @@
+#pragma once
+
+// ISO 9660 directory listing for a 2352-byte Mode 2 image, plus the TIM
+// picture layout. The ISO parser reads 2048-byte user sectors. A TIM is
+// accepted only when the buffer starts with id word 0x10 and its block sizes
+// fit. Neither check is a guess about a particular disc file.
+
+#include "psx_cd_loc.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace psx_cd_loc {
+
+struct IsoEntry {
+  std::string path;
+  std::uint32_t lba = 0;
+  std::uint32_t length = 0;
+  bool directory = false;
+};
+
+struct IsoVolume {
+  std::string volume_id;
+  std::vector<IsoEntry> entries;
+};
+
+enum class IsoError {
+  None,
+  NotIso,
+  Truncated,
+  BadSector,
+  TooLarge,
+};
+
+const char* iso_error_text(IsoError error);
+
+// read_user returns the 2048 user bytes of one ISO logical sector.
+using ReadUserSector = std::function<bool(std::uint32_t lba, std::vector<std::uint8_t>& user,
+                                          std::string& error)>;
+
+std::optional<IsoVolume> read_iso9660(const ReadUserSector& read_user, IsoError& error);
+
+// First FILE that has a MODE2/2352 track. The returned name is the cue text,
+// not a resolved path.
+std::optional<std::string> cue_mode2_file(std::string_view cue_text, std::string& error);
+
+struct TimRgb {
+  int width = 0;
+  int height = 0;
+  std::vector<std::uint8_t> rgb;
+};
+
+// 16-bit direct color, or 8-bit with a CLUT. Other pixel modes are refused.
+std::optional<TimRgb> decode_tim(std::span<const std::uint8_t> bytes);
+
+// Binary PPM (P6). Empty when the picture is empty.
+std::vector<std::uint8_t> encode_ppm(const TimRgb& picture);
+
+}  // namespace psx_cd_loc
