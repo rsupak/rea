@@ -28,6 +28,7 @@ enum class FileKind {
   Wds,
   Smds,
   Seds,
+  Overlay,
 };
 
 struct FoundTim {

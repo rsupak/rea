@@ -154,10 +154,10 @@ On the disc already measured, expect `volume XENOGEARS`, the two ISO files,
 `prefix_bytes 672`, and `lz` lines `bytes=29779` and `bytes=260862` with
 `tim=no`. `index_base 24` is followed by one `index` line per file in the
 executable's table (365 files, including id 2 at LBA 108754 length 61680).
-`index_tim` is printed when a buffer is a TIM. Pixel width is the header
-value times 4, 2, or 1 for 4-bit, 8-bit, and 16-bit. `--export-all` with
-`--export-dir` writes every such picture; without `--export-all` only the
-first is written. A picture found at an in-range offset of a relocated
+`--export-all` writes TIM pictures. `--export-audio` writes WAV files.
+`--export-dir` only names the directory. `index_tim` is printed when a
+buffer is a TIM. Pixel width is the header
+value times 4, 2, or 1 for 4-bit, 8-bit, and 16-bit. A picture found at an in-range offset of a relocated
 word table is written as `index-<id>-offset-<n>.ppm`.
 
 `--classify` prints one line per indexed file and a count summary:
@@ -192,7 +192,15 @@ offset 16 is the header, the word at 20 is the sample-byte count, and the
 word at 24 is the sample offset. `--export-audio` writes each piece as
 `index-<id>-sample-<k>.wav` at 44100 Hz, the SPU rate for pitch `0x1000`.
 `seds` reports the size, version halfword, and id the list code loads.
-`smds` is only the tag; this executable does not compare it. The startup path
+`smds` is only the tag; this executable does not compare it. An unpacked
+buffer whose first word is a small count, or a run of at least four
+words, of absolute `0x80000000` pointers, and whose following bytes are
+MIPS, is `overlay`. `low` is the lowest of those pointers. `load` is that
+address minus the header size when every pointer then lands in the code.
+`contains=0x80077e88` means the scene-table call target falls in that
+image and those bytes are MIPS too. The captured `wds` bank's noisier
+samples end on the end-flag block of their address span, so the sample
+cut is that span rather than the halfword at record offset 4. The startup path
 relocates one unpacked table and later reads a halfword at
 `entry + 4 + index*2`. The four-pointer block is decompressed to a fixed
 address, and the following call leaves this executable, so the name bytes

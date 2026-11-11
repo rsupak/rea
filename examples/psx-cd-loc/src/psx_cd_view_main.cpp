@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
               << " sha256=" << psx_cd_loc::sha256_hex(decoded->bytes)
               << " tim=" << (tim.has_value() ? "yes" : "no") << '\n';
     print_hex_ascii(decoded->bytes, 48);
-    if (tim.has_value() && !export_dir.empty()) {
+    if (export_all && tim.has_value() && !export_dir.empty()) {
       const auto ppm = psx_cd_loc::encode_ppm(*tim);
       const auto path = std::filesystem::path(export_dir) / (std::string(stream.name) + ".ppm");
       std::ofstream output(path, std::ios::binary);
@@ -300,7 +300,6 @@ int main(int argc, char** argv) {
   std::cout << "index_files " << file_count << '\n';
 
   bool found_tim = false;
-  bool wrote_tim = false;
   std::map<std::string, int> counts;
   std::map<std::string, int> data_heads;
   std::map<std::string, int> lz_heads;
@@ -372,7 +371,7 @@ int main(int argc, char** argv) {
       found_tim = true;
       std::cout << "index_tim " << blob.file.id << ' ' << blob.file.lba << ' ' << picture.label << ' '
                 << picture.image.width << 'x' << picture.image.height << '\n';
-      if (!export_dir.empty() && (export_all || !wrote_tim)) {
+      if (export_all && !export_dir.empty()) {
         const auto ppm = psx_cd_loc::encode_ppm(picture.image);
         std::string label = picture.label;
         for (char& ch : label) {
@@ -389,7 +388,6 @@ int main(int argc, char** argv) {
           output.write(reinterpret_cast<const char*>(ppm.data()),
                        static_cast<std::streamsize>(ppm.size()));
           std::cout << "wrote " << path.string() << '\n';
-          wrote_tim = true;
         }
       }
       ++picture_index;

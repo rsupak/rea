@@ -1,6 +1,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <Cocoa/Cocoa.h>
 
+#include "psx_audio.hpp"
 #include "psx_catalog.hpp"
 
 #include <cstring>

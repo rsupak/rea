@@ -175,6 +175,100 @@ bool find_interior_table(std::span<const std::uint8_t> bytes, std::uint32_t& at,
   return false;
 }
 
+bool kseg_pointer(std::uint32_t word) {
+  return (word & 3u) == 0 && word >= 0x80000000u && word < 0x80800000u;
+}
+
+int mips_score(std::span<const std::uint8_t> bytes) {
+  const std::size_t words = std::min<std::size_t>(bytes.size() / 4, 8);
+  int score = 0;
+  for (std::size_t i = 0; i < words; ++i) {
+    const std::uint32_t word = read_u32(bytes, i * 4);
+    const unsigned op = word >> 26;
+    const unsigned funct = word & 63u;
+    if (word == 0) {
+      ++score;
+      continue;
+    }
+    if (op == 0 && (funct == 0 || funct == 2 || funct == 3 || funct == 8 || funct == 9 || funct == 16 ||
+                    funct == 18 || funct == 33 || funct == 35 || funct == 36 || funct == 37 || funct == 42 ||
+                    funct == 43)) {
+      ++score;
+      continue;
+    }
+    if (op == 2 || op == 3 || op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 9 || op == 10 ||
+        op == 12 || op == 13 || op == 15 || op == 32 || op == 33 || op == 35 || op == 36 || op == 37 ||
+        op == 41 || op == 43) {
+      ++score;
+    }
+  }
+  return score;
+}
+
+// Count plus absolute pointers, then MIPS. The lowest pointer is an entry
+// address. When that entry is the first instruction after the pointer table,
+// the load address of byte 0 is entry - header_size.
+bool match_overlay(std::span<const std::uint8_t> bytes, std::string& detail) {
+  if (bytes.size() < 48) {
+    return false;
+  }
+  const std::uint32_t first = read_u32(bytes, 0);
+  std::vector<std::uint32_t> pointers;
+  std::size_t header = 0;
+  if (first >= 1 && first <= 32) {
+    header = (static_cast<std::size_t>(first) + 1u) * 4u;
+    if (header + 32 > bytes.size()) {
+      return false;
+    }
+    for (std::uint32_t i = 0; i < first; ++i) {
+      const std::uint32_t pointer = read_u32(bytes, 4 + static_cast<std::size_t>(i) * 4);
+      if (!kseg_pointer(pointer)) {
+        return false;
+      }
+      pointers.push_back(pointer);
+    }
+  } else if (kseg_pointer(first)) {
+    for (std::size_t i = 0; i < 32 && (i + 1) * 4 + 32 <= bytes.size(); ++i) {
+      const std::uint32_t pointer = read_u32(bytes, i * 4);
+      if (!kseg_pointer(pointer)) {
+        break;
+      }
+      pointers.push_back(pointer);
+    }
+    if (pointers.size() < 4) {
+      return false;
+    }
+    header = pointers.size() * 4;
+  } else {
+    return false;
+  }
+  if (mips_score(bytes.subspan(header)) < 6) {
+    return false;
+  }
+  const auto low = *std::min_element(pointers.begin(), pointers.end());
+  detail = "entries=" + std::to_string(pointers.size()) + " low=0x" + hex8(low);
+  if (low >= header) {
+    const std::uint32_t load = low - static_cast<std::uint32_t>(header);
+    bool entries_inside = true;
+    for (const std::uint32_t pointer : pointers) {
+      const std::uint32_t at = pointer - load;
+      if (at < header || at >= bytes.size()) {
+        entries_inside = false;
+        break;
+      }
+    }
+    if (entries_inside) {
+      detail += " load=0x" + hex8(load);
+      constexpr std::uint32_t kCallTarget = 0x80077E88u;
+      if (kCallTarget >= load && kCallTarget - load + 16 <= bytes.size() &&
+          mips_score(bytes.subspan(kCallTarget - load)) >= 6) {
+        detail += " contains=0x80077e88";
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 const char* file_kind_name(FileKind kind) {
@@ -209,6 +303,8 @@ const char* file_kind_name(FileKind kind) {
       return "smds";
     case FileKind::Seds:
       return "seds";
+    case FileKind::Overlay:
+      return "overlay";
   }
   return "data";
 }
@@ -286,6 +382,12 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
       result.detail = "lz at=" + std::to_string(at) + " count=" + std::to_string(count) +
                       " inside=" + std::to_string(inside);
       append_tag(result.detail, std::span<const std::uint8_t>(decoded->bytes).subspan(at));
+      return result;
+    }
+    std::string overlay_detail;
+    if (match_overlay(decoded->bytes, overlay_detail)) {
+      result.kind = FileKind::Overlay;
+      result.detail = overlay_detail;
       return result;
     }
     result.kind = FileKind::Lz;

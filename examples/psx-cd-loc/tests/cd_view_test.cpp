@@ -415,6 +415,25 @@ void test_classification_of_lz_offset_table_and_signatures() {
 
   std::vector<std::uint8_t> smds = {'s', 'm', 'd', 's', 1, 0, 0, 0};
   CHECK(psx_cd_loc::classify_file_bytes(smds, 8).kind == psx_cd_loc::FileKind::Smds);
+
+  std::vector<std::uint8_t> overlay(48, 0);
+  put_u32(overlay, 0, 2);
+  put_u32(overlay, 4, 0x80070000u);
+  put_u32(overlay, 8, 0x80070010u);
+  put_u32(overlay, 12, 0x27BDFFE0u);
+  put_u32(overlay, 16, 0xAFBF001Cu);
+  put_u32(overlay, 20, 0xAFB00018u);
+  put_u32(overlay, 24, 0x00808021u);
+  put_u32(overlay, 28, 0x8FBF001Cu);
+  put_u32(overlay, 32, 0x03E00008u);
+  put_u32(overlay, 40, 0x24020001u);
+  const auto overlay_lz = literal_lz(48, overlay);
+  const auto overlay_kind =
+      psx_cd_loc::classify_file_bytes(overlay_lz, static_cast<std::uint32_t>(overlay_lz.size()));
+  CHECK(overlay_kind.kind == psx_cd_loc::FileKind::Overlay);
+  CHECK(overlay_kind.detail.find("entries=2") != std::string::npos);
+  CHECK(overlay_kind.detail.find("low=0x80070000") != std::string::npos);
+  CHECK(overlay_kind.detail.find("load=0x8006fff4") != std::string::npos);
   CHECK(!psx_cd_loc::open_indexed_disc("/no/such/image.bin").error.empty());
   CHECK(!psx_cd_loc::preview_indexed_file("/no/such/image.bin", 0, 16).error.empty());
 }
