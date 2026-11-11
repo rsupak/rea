@@ -320,6 +320,40 @@ void test_classification_of_lz_offset_table_and_signatures() {
   put_u32(mips, 0, addiu_sp);
   put_u32(mips, 4, sw_ra);
   CHECK(psx_cd_loc::classify_file_bytes(mips, 8).kind == psx_cd_loc::FileKind::Mips);
+
+  std::vector<std::uint8_t> tagged(16, 0);
+  put_u32(tagged, 0, 1);
+  put_u32(tagged, 8, 0x1100u);
+  const auto tagged_kind = psx_cd_loc::classify_file_bytes(tagged, 16);
+  CHECK(tagged_kind.kind == psx_cd_loc::FileKind::OffsetTable);
+  CHECK(tagged_kind.detail.find("tag=0x1100") != std::string::npos);
+
+  std::vector<std::uint8_t> wide(1204, 0);
+  put_u32(wide, 0, 300);
+  CHECK(psx_cd_loc::classify_file_bytes(wide, 1204).kind == psx_cd_loc::FileKind::OffsetTable);
+
+  std::vector<std::uint8_t> buried(56, 0);
+  put_u32(buried, 16, 2);
+  put_u32(buried, 20, 12);
+  put_u32(buried, 24, 12);
+  put_u32(buried, 28, 0x10);
+  put_u32(buried, 32, 2);
+  put_u32(buried, 36, 20);
+  put_u16(buried, 44, 2);
+  put_u16(buried, 46, 2);
+  const auto buried_lz = literal_lz(56, buried);
+  const auto buried_kind =
+      psx_cd_loc::classify_file_bytes(buried_lz, static_cast<std::uint32_t>(buried_lz.size()));
+  CHECK(buried_kind.kind == psx_cd_loc::FileKind::OffsetTable);
+  CHECK(buried_kind.detail.find("at=16") != std::string::npos);
+  CHECK(buried_kind.pictures.size() == 2);
+  CHECK(buried_kind.pictures[0].image.width == 2);
+  CHECK(buried_kind.pictures[0].image.height == 2);
+
+  std::vector<std::uint8_t> opaque(32, 0x11);
+  const auto data = psx_cd_loc::classify_file_bytes(opaque, 32);
+  CHECK(data.kind == psx_cd_loc::FileKind::Data);
+  CHECK(data.detail.find("w0=11111111") != std::string::npos);
   CHECK(!psx_cd_loc::open_indexed_disc("/no/such/image.bin").error.empty());
   CHECK(!psx_cd_loc::preview_indexed_file("/no/such/image.bin", 0, 16).error.empty());
 }

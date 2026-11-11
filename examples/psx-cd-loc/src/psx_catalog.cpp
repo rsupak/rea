@@ -55,14 +55,15 @@ bool looks_like_mips_prologue(std::span<const std::uint8_t> bytes) {
   return addiu_sp && sw_ra;
 }
 
-// The loader adds the block base to each of the count words at offset 4.
-// A negative word is still relocated, so only a majority must land inside.
+// The relocator at 0x8003342C adds the block base to each of word0 words at
+// offset 4. It has no small cap. 4096 is this tool's bound. A negative word
+// is still relocated, so only a majority must land inside the block.
 bool is_offset_table(std::span<const std::uint8_t> bytes, std::uint32_t& count, std::uint32_t& inside) {
   if (bytes.size() < 8) {
     return false;
   }
   count = read_u32(bytes, 0);
-  if (count < 1 || count > 256) {
+  if (count < 1 || count > 4096) {
     return false;
   }
   const std::uint64_t table_bytes = (static_cast<std::uint64_t>(count) + 1ull) * 4ull;
@@ -79,22 +80,98 @@ bool is_offset_table(std::span<const std::uint8_t> bytes, std::uint32_t& count, 
   return inside * 2 >= count;
 }
 
-void collect_offset_tims(std::span<const std::uint8_t> bytes, std::vector<FoundTim>& pictures) {
+// 0x8002DDE4 reads the word after the pointer table and accepts 0x1100 or 0x1101.
+std::uint32_t tag_after_table(std::span<const std::uint8_t> bytes, std::uint32_t count) {
+  const std::uint64_t at = (static_cast<std::uint64_t>(count) + 1ull) * 4ull;
+  if (at + 4 > bytes.size()) {
+    return 0;
+  }
+  const std::uint32_t tag = read_u32(bytes, static_cast<std::size_t>(at));
+  if (tag == 0x1100u || tag == 0x1101u) {
+    return tag;
+  }
+  return 0;
+}
+
+std::string hex8(std::uint32_t value) {
+  char out[9];
+  for (int i = 7; i >= 0; --i) {
+    const unsigned nibble = value & 0xFu;
+    out[i] = static_cast<char>(nibble < 10 ? '0' + nibble : 'a' + (nibble - 10));
+    value >>= 4;
+  }
+  out[8] = '\0';
+  return out;
+}
+
+void collect_table_tims(std::span<const std::uint8_t> block, std::vector<FoundTim>& pictures, int depth,
+                        const std::string& prefix) {
   std::uint32_t count = 0;
   std::uint32_t inside = 0;
-  if (!is_offset_table(bytes, count, inside)) {
+  if (depth <= 0 || !is_offset_table(block, count, inside)) {
     return;
   }
   for (std::uint32_t i = 0; i < count; ++i) {
-    const auto offset = static_cast<std::int32_t>(read_u32(bytes, 4 + static_cast<std::size_t>(i) * 4));
-    if (offset < 0 || static_cast<std::uint32_t>(offset) >= bytes.size()) {
+    const auto offset = static_cast<std::int32_t>(read_u32(block, 4 + static_cast<std::size_t>(i) * 4));
+    if (offset <= 0 || static_cast<std::uint32_t>(offset) >= block.size()) {
       continue;
     }
-    auto picture = decode_tim(bytes.subspan(static_cast<std::size_t>(offset)));
-    if (picture.has_value()) {
-      pictures.push_back(FoundTim{std::move(*picture), "offset:" + std::to_string(i)});
+    const auto child = block.subspan(static_cast<std::size_t>(offset));
+    const std::string label = prefix + "offset:" + std::to_string(i);
+    if (auto picture = decode_tim(child)) {
+      pictures.push_back(FoundTim{std::move(*picture), label});
+      continue;
+    }
+    std::uint32_t nested_count = 0;
+    std::uint32_t nested_inside = 0;
+    if (is_offset_table(child, nested_count, nested_inside)) {
+      collect_table_tims(child, pictures, depth - 1, label + ":");
     }
   }
+}
+
+void append_tag(std::string& detail, std::span<const std::uint8_t> block) {
+  std::uint32_t count = 0;
+  std::uint32_t inside = 0;
+  if (!is_offset_table(block, count, inside)) {
+    return;
+  }
+  const std::uint32_t tag = tag_after_table(block, count);
+  if (tag != 0) {
+    detail += " tag=0x" + hex8(tag).substr(4);
+  }
+}
+
+// A table not at byte 0 is kept when it points at a picture or carries a tag
+// the chunk walker compares. Offset 0 is the block itself, so it is not a child.
+bool find_interior_table(std::span<const std::uint8_t> bytes, std::uint32_t& at, std::uint32_t& count,
+                         std::uint32_t& inside, std::vector<FoundTim>& pictures) {
+  if (bytes.size() < 16) {
+    return false;
+  }
+  for (std::size_t pos = 4; pos + 8 <= bytes.size(); pos += 4) {
+    const auto block = bytes.subspan(pos);
+    if (!is_offset_table(block, count, inside) || count < 2 || count > 256) {
+      continue;
+    }
+    std::vector<FoundTim> found;
+    collect_table_tims(block, found, 3, "at:" + std::to_string(pos) + ":");
+    const std::uint32_t tag = tag_after_table(block, count);
+    bool useful = tag != 0;
+    for (const auto& picture : found) {
+      if (picture.image.width >= 2 && picture.image.height >= 2) {
+        useful = true;
+      }
+    }
+    if (!useful) {
+      continue;
+    }
+    at = static_cast<std::uint32_t>(pos);
+    pictures.insert(pictures.end(), std::make_move_iterator(found.begin()),
+                    std::make_move_iterator(found.end()));
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -175,7 +252,16 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
     if (is_offset_table(decoded->bytes, count, inside)) {
       result.kind = FileKind::OffsetTable;
       result.detail = "count=" + std::to_string(count) + " inside=" + std::to_string(inside);
-      collect_offset_tims(decoded->bytes, result.pictures);
+      append_tag(result.detail, decoded->bytes);
+      collect_table_tims(decoded->bytes, result.pictures, 3, "");
+      return result;
+    }
+    std::uint32_t at = 0;
+    if (find_interior_table(decoded->bytes, at, count, inside, result.pictures)) {
+      result.kind = FileKind::OffsetTable;
+      result.detail = "lz at=" + std::to_string(at) + " count=" + std::to_string(count) +
+                      " inside=" + std::to_string(inside);
+      append_tag(result.detail, std::span<const std::uint8_t>(decoded->bytes).subspan(at));
       return result;
     }
     result.kind = FileKind::Lz;
@@ -187,7 +273,8 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
   if (is_offset_table(file, count, inside)) {
     result.kind = FileKind::OffsetTable;
     result.detail = "count=" + std::to_string(count) + " inside=" + std::to_string(inside);
-    collect_offset_tims(file, result.pictures);
+    append_tag(result.detail, file);
+    collect_table_tims(file, result.pictures, 3, "");
     return result;
   }
   if (looks_like_text(file)) {
@@ -200,6 +287,12 @@ Classification classify_file_bytes(std::span<const std::uint8_t> rounded, std::u
     return result;
   }
   result.kind = FileKind::Data;
+  if (file.size() >= 4) {
+    result.detail = "w0=" + hex8(read_u32(file, 0));
+    if (file.size() >= 8) {
+      result.detail += " w1=" + hex8(read_u32(file, 4));
+    }
+  }
   return result;
 }
 

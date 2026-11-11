@@ -297,6 +297,7 @@ int main(int argc, char** argv) {
   bool found_tim = false;
   bool wrote_tim = false;
   std::map<std::string, int> counts;
+  std::map<std::string, int> data_heads;
   for (const auto& blob : disc.entries) {
     if (blob.file.group || blob.file.length <= 0) {
       continue;
@@ -311,6 +312,9 @@ int main(int argc, char** argv) {
     const auto& classified = blob.classification;
     const char* name = psx_cd_loc::file_kind_name(classified.kind);
     ++counts[name];
+    if (classify && classified.kind == psx_cd_loc::FileKind::Data && !classified.detail.empty()) {
+      ++data_heads[classified.detail];
+    }
     if (classify) {
       std::cout << "classify " << blob.file.id << ' ' << blob.file.lba << ' ' << blob.file.length << ' '
                 << name;
@@ -353,6 +357,9 @@ int main(int argc, char** argv) {
       std::cout << ' ' << count.first << '=' << count.second;
     }
     std::cout << '\n';
+    for (const auto& head : data_heads) {
+      std::cout << "data_head " << head.second << ' ' << head.first << '\n';
+    }
   }
   if (!found_tim) {
     std::cout << "index_tim none\n";

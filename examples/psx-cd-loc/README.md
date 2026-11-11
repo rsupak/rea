@@ -175,10 +175,20 @@ added to the block base, and a negative offset is still relocated. The
 viewer accepts that shape only when at least half of those offsets land
 inside the buffer, so the unpacked block whose first word is 8 and whose
 next word is past the end stays `lz`. That majority test is not in the
-executable. `vag` (`VAGp`), `vab` (`pBAV`), `seq` (`pQES`), and `str`
+executable. The count may be as large as 4096; the relocator itself has
+no such bound. A table that does not start at byte 0 is reported only
+for an unpacked buffer, and only when an entry is a TIM of at least 2x2
+or the word after the pointer table is `0x1100` or `0x1101`. That tag
+check is the comparison in the chunk walker. `vag` (`VAGp`), `vab` (`pBAV`), `seq` (`pQES`), and `str`
 (first word `0x80010160`) are standard signatures, not a traced load.
 `mips` is only an `addiu sp,sp,<0` plus `sw ra,off(sp)` pair. `text` is a
 printable prefix. No XA type is assigned; that audio has no file magic here.
+A `data` line carries the first two words, and `--classify` then prints
+`data_head COUNT w0=... w1=...` for each distinct pair. The startup path
+relocates one unpacked table and later reads a halfword at
+`entry + 4 + index*2`. The four-pointer block is decompressed to a fixed
+address, and the following call leaves this executable, so the name bytes
+after those pointers are not parsed here.
 
 ## XenoNative
 
